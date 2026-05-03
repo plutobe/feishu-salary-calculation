@@ -85,8 +85,11 @@ body {
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: all .15s;
+  transition: all 0.2s ease;
   text-decoration: none;
+}
+.btn:active {
+  transform: scale(0.98);
 }
 .btn-primary { background: var(--primary); color: #fff; }
 .btn-primary:hover { background: #3b5de7; }
@@ -150,17 +153,6 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .salary-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(74,108,247,.15); }
 
-.leave-input {
-  width: 70px;
-  padding: 5px 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 13px;
-  text-align: right;
-}
-.leave-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(74,108,247,.15); }
-.leave-input.danger { border-color: var(--danger); }
-
 .rate-input {
   width: 60px;
   padding: 4px 6px;
@@ -178,6 +170,7 @@ tbody tr:last-child td { border-bottom: none; }
   font-size: 16px;
   font-weight: 700;
   color: var(--primary);
+  text-shadow: 0 1px 2px rgba(74,108,247,0.2);
 }
 
 /* Daily Calendar — 7-column grid */
@@ -245,6 +238,11 @@ tbody tr:last-child td { border-bottom: none; }
   background: var(--gray-light);
   border-radius: 8px;
   padding: 14px 16px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.summary-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
 .summary-card .label { font-size: 12px; color: var(--text-light); margin-bottom: 4px; }
 .summary-card .value { font-size: 18px; font-weight: 700; }
@@ -259,21 +257,22 @@ tbody tr:last-child td { border-bottom: none; }
   box-shadow: 0 1px 4px rgba(0,0,0,.06);
   margin-bottom: 20px;
   overflow: hidden;
+  transition: all 0.3s ease;
 }
-.rules-title {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.rules-wrap:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.rules-title-static {
   padding: 14px 20px;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
-  cursor: pointer;
-  user-select: none;
-  color: var(--text-light);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
 }
-.rules-title:hover { color: var(--primary); }
-.rules-body { display: none; padding: 0 20px 16px; }
-.rules-body.open { display: block; }
+.rules-body-static {
+  display: block !important;
+  padding: 16px 20px 20px;
+}
 .rules-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -330,33 +329,6 @@ tbody tr:last-child td { border-bottom: none; }
   .leave-input { width: 60px; }
 }
 
-/* Enhanced styles */
-.summary-card {
-  transition: transform 0.2s, box-shadow 0.2s;
-}
-.summary-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-}
-
-.rules-wrap {
-  transition: all 0.3s ease;
-}
-.rules-wrap:hover {
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-}
-
-.btn {
-  transition: all 0.2s ease;
-}
-.btn:active {
-  transform: scale(0.98);
-}
-
-.stat-final {
-  text-shadow: 0 1px 2px rgba(74,108,247,0.2);
-}
-
 /* Scrollbar styling */
 .table-wrap::-webkit-scrollbar {
   height: 8px;
@@ -376,27 +348,6 @@ tbody tr:last-child td { border-bottom: none; }
 /* Input focus states */
 input[type="number"]:focus {
   outline: none;
-}
-
-/* Tooltip for status badges */
-.status-badge {
-  display: inline-block;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 500;
-}
-.status-probation {
-  background: #fff3cd;
-  color: #856404;
-}
-.status-formal {
-  background: #d4edda;
-  color: #155724;
-}
-.status-transition {
-  background: #cce5ff;
-  color: #004085;
 }
 
 /* Static rules (always visible at bottom) */

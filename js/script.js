@@ -168,8 +168,13 @@ function calcEmployee(emp) {
   let probationEndDate = null;
   if (emp.hireDate) {
     const hire = new Date(emp.hireDate);
+    const hireDay = hire.getDate();
     probationEndDate = new Date(hire);
     probationEndDate.setMonth(probationEndDate.getMonth() + months);
+    // Safely handle month overflow (e.g., Mar 31 + 1 month should be Apr 30, not May 1)
+    if (probationEndDate.getDate() !== hireDay) {
+      probationEndDate.setDate(0); // Go back to last day of previous month
+    }
     probationEndDate.setDate(probationEndDate.getDate() - 1); // End day is day before
   }
 
@@ -341,7 +346,9 @@ function render() {
 
     // Daily calendar — 7-column grid: 日 一 二 三 四 五 六
     const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六'];
-    const firstWeekday = 3; // 2026-04-01 is Wednesday (weekday 3, Sun=0)
+    // Calculate first weekday dynamically from actual data
+    const firstDate = emp.daily.find(d => d.date);
+    const firstWeekday = firstDate ? new Date(firstDate.date).getDay() : 0;
     let dailyHtml = '<div class="daily-grid">';
     // Weekday header row
     for (let w = 0; w < 7; w++) {
@@ -476,6 +483,20 @@ function updateDerivedHours(emp) {
 
 // ======= Modal Settings =======
 function openSettings() {
+  // Populate inputs from actual state
+  document.querySelector('[onchange="updateRate(\'pension\',\'unit\',this.value)"]').value = socialInsurance.pension.unit;
+  document.querySelector('[onchange="updateRate(\'pension\',\'personal\',this.value)"]').value = socialInsurance.pension.personal;
+  document.querySelector('[onchange="updateRate(\'medical\',\'unit\',this.value)"]').value = socialInsurance.medical.unit;
+  document.querySelector('[onchange="updateRate(\'medical\',\'personal\',this.value)"]').value = socialInsurance.medical.personal;
+  document.querySelector('[onchange="updateRate(\'medicalExtra\',\'extra\',this.value)"]').value = socialInsurance.medicalExtra;
+  document.querySelector('[onchange="updateRate(\'maternity\',\'unit\',this.value)"]').value = socialInsurance.maternity.unit;
+  document.querySelector('[onchange="updateRate(\'maternity\',\'personal\',this.value)"]').value = socialInsurance.maternity.personal;
+  document.querySelector('[onchange="updateRate(\'unemployment\',\'unit\',this.value)"]').value = socialInsurance.unemployment.unit;
+  document.querySelector('[onchange="updateRate(\'unemployment\',\'personal\',this.value)"]').value = socialInsurance.unemployment.personal;
+  document.querySelector('[onchange="updateRate(\'injury\',\'unit\',this.value)"]').value = socialInsurance.injury.unit;
+  document.querySelector('[onchange="updateRate(\'injury\',\'personal\',this.value)"]').value = socialInsurance.injury.personal;
+  document.querySelector('[onchange="updateProbationDiscount(this.value)"]').value = probationSettings.discount;
+  document.querySelector('[onchange="updateProbationMonths(this.value)"]').value = probationSettings.months;
   document.getElementById('settingsModal').classList.add('active');
 }
 
@@ -513,17 +534,20 @@ function updateRate(type, field, val) {
   } else {
     socialInsurance[type][field] = v;
   }
+  saveSettings();
   render();
 }
 
 function updateProbationDiscount(val) {
   probationSettings.discount = parseFloat(val) || 80;
+  saveSettings();
   render();
 }
 
 function updateProbationMonths(val) {
   const parsed = parseInt(val);
   probationSettings.months = isNaN(parsed) ? 3 : parsed;
+  saveSettings();
   render();
 }
 
@@ -565,6 +589,7 @@ const CACHE_KEY = 'salaryCalc Employees';
 const EMPLOYEES_CACHE_KEY = 'salaryCalc AllEmployees';
 const FILENAME_CACHE_KEY = 'salaryCalc FileName';
 const SALARY_PERIOD_CACHE_KEY = 'salaryCalc SalaryPeriod';
+const SETTINGS_CACHE_KEY = 'salaryCalc Settings';
 
 function getCacheKey(emp) {
   return `${emp.name}|${emp.employeeId}`;
@@ -642,6 +667,26 @@ function loadEmployeesFromCache() {
 }
 
 // ======= Utilities =======
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ socialInsurance, probationSettings }));
+  } catch (e) {
+    console.warn('Failed to save settings:', e);
+  }
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_CACHE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved.socialInsurance) socialInsurance = saved.socialInsurance;
+    if (saved.probationSettings) probationSettings = saved.probationSettings;
+  } catch (e) {
+    console.warn('Failed to load settings:', e);
+  }
+}
+
 function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -773,13 +818,14 @@ function exportCSV() {
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
-  link.download = '工资计算结果.csv';
+  link.download = salaryPeriod ? `工资计算结果_${salaryPeriod}.csv` : '工资计算结果.csv';
   link.click();
   URL.revokeObjectURL(link.href);
 }
 
 // ======= Init: restore from cache on page load =======
 (function() {
+  loadSettings();
   if (loadEmployeesFromCache()) {
     render();
   }
