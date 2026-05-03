@@ -776,6 +776,12 @@ function calcEmployee(emp) {
     ? (probationDays * probationSalary + formalDays * formalSalary) / totalDays
     : formalSalary;
 
+  // 按实际出勤天数比例折算月薪 (21.75为国家月计薪天数)
+  const attendanceRatio = emp.actualDays > 0
+    ? Math.min(emp.actualDays / 21.75, 1)
+    : 1;
+  const proratedBase = weightedMonthlySalary * attendanceRatio;
+
   const dailySalary = weightedMonthlySalary / 21.75;
   const hourlySalary = weightedMonthlySalary / 174; // 21.75 × 8
 
@@ -803,11 +809,11 @@ function calcEmployee(emp) {
   const injuryDeduction = formalSalary * si.injury.personal / 100;
   const siTotal = pensionDeduction + medicalDeduction + unemploymentDeduction + maternityDeduction + injuryDeduction;
 
-  // Net salary based on weighted monthly salary
-  const netSalary = weightedMonthlySalary - sickDeduction - personalDeduction - siTotal;
+  // Net salary: prorate base salary by attendance ratio, then subtract deductions
+  const netSalary = proratedBase - sickDeduction - personalDeduction - siTotal;
 
   return {
-    dailySalary, hourlySalary, weightedMonthlySalary, probationEndDate,
+    dailySalary, hourlySalary, weightedMonthlySalary, attendanceRatio, proratedBase, probationEndDate,
     probationDays, formalDays, probationSalary,
     sickDeduction, personalDeduction,
     pensionDeduction, medicalDeduction, unemploymentDeduction, maternityDeduction, injuryDeduction,
@@ -962,11 +968,13 @@ function render() {
         <div>加权月薪 = ${fmtMoney(calc.weightedMonthlySalary)}</div>
         <div>日薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 21.75天 = <strong>${fmtMoney(calc.dailySalary)}</strong></div>
         <div>时薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 174h = <strong>${fmtMoney(calc.hourlySalary)}</strong></div>
+        ${calc.attendanceRatio < 1 ? `<div>出勤比 = ${emp.actualDays}/21.75天 = ${(calc.attendanceRatio * 100).toFixed(1)}%</div>
+        <div>折算月薪 = ${fmtMoney(calc.weightedMonthlySalary)} × ${(calc.attendanceRatio * 100).toFixed(1)}% = <strong>${fmtMoney(calc.proratedBase)}</strong></div>` : ''}
         ${emp.sickHours > 0 ? `<div>病假扣 = ${emp.sickHours}h × ${fmtMoney(calc.hourlySalary)} × 30% = <strong>${fmtMoney(calc.sickDeduction)}</strong></div>` : ''}
         ${emp.personalHours > 0 ? `<div>事假扣 = ${emp.personalHours}h × ${fmtMoney(calc.hourlySalary)} = <strong>${fmtMoney(calc.personalDeduction)}</strong></div>` : ''}
         ${emp.compHours > 0 ? '<div>调休假 = 不扣款</div>' : ''}
         <div>社保扣 = <strong>${fmtMoney(calc.siTotal)}</strong> <small>(按正式薪资)</small></div>
-        <div style="color:var(--primary);font-weight:600;margin-top:2px">实发 = ${fmtMoney(calc.weightedMonthlySalary)} − ${fmtMoney(calc.sickDeduction)} − ${fmtMoney(calc.personalDeduction)} − ${fmtMoney(calc.siTotal)} = ${fmtMoney(calc.netSalary)}</div>
+        <div style="color:var(--primary);font-weight:600;margin-top:2px">实发 = ${fmtMoney(calc.proratedBase)} − ${fmtMoney(calc.sickDeduction)} − ${fmtMoney(calc.personalDeduction)} − ${fmtMoney(calc.siTotal)} = ${fmtMoney(calc.netSalary)}</div>
       </td>
     </tr>`;
   });
