@@ -734,13 +734,13 @@ function roundToHalfDay(hours, emp) {
 // ======= Calculations (按国家规定21.75天) =======
 function calcEmployee(emp) {
   const formalSalary = emp.monthlySalary;
-  const probationSalary = emp.probationSalary || (formalSalary * probationSettings.discount / 100);
+  const months = emp.probationMonths != null ? emp.probationMonths : probationSettings.months;
+  const probationSalary = months === 0 ? formalSalary : (emp.probationSalary || (formalSalary * probationSettings.discount / 100));
 
   // Calculate probation end date
   let probationEndDate = null;
   if (emp.hireDate) {
     const hire = new Date(emp.hireDate);
-    const months = emp.probationMonths || probationSettings.months;
     probationEndDate = new Date(hire);
     probationEndDate.setMonth(probationEndDate.getMonth() + months);
     probationEndDate.setDate(probationEndDate.getDate() - 1); // End day is day before
@@ -913,8 +913,8 @@ function render() {
     dailyHtml += '</div>';
 
     const halfDay = calcHalfDayHours(emp);
-    const probationSalary = emp.probationSalary || (emp.monthlySalary * probationSettings.discount / 100);
-    const probationMonths = emp.probationMonths || probationSettings.months;
+    const probationMonths = emp.probationMonths != null ? emp.probationMonths : probationSettings.months;
+    const probationSalary = probationMonths === 0 ? emp.monthlySalary : (emp.probationSalary || (emp.monthlySalary * probationSettings.discount / 100));
     const probationEndDateStr = calc.probationEndDate ? calc.probationEndDate.toISOString().split('T')[0] : '-';
     const hireDateStr = emp.hireDate || '-';
     const isProbation = calc.probationDays > 0 && calc.formalDays === 0;
@@ -1072,7 +1072,8 @@ function updateProbationDiscount(val) {
 }
 
 function updateProbationMonths(val) {
-  probationSettings.months = parseInt(val) || 3;
+  const parsed = parseInt(val);
+  probationSettings.months = isNaN(parsed) ? 3 : parsed;
   render();
 }
 
@@ -1085,7 +1086,8 @@ function updateEmployeeProbationSalary(idx, val) {
 
 function updateEmployeeProbationMonths(idx, val) {
   if (idx >= 0 && idx < employees.length) {
-    employees[idx].probationMonths = parseInt(val) || probationSettings.months;
+    const parsed = parseInt(val);
+    employees[idx].probationMonths = isNaN(parsed) ? probationSettings.months : parsed;
     render();
   }
 }
@@ -1149,15 +1151,15 @@ function exportCSV() {
   // Calculate company contribution totals
   const si = socialInsurance;
   let csv = '﻿姓名,工号,部门,入职日期,转正日期,正式月薪,试用期月薪,试用期月数,应出勤天数,实际出勤天数,缺勤小时,病假小时,调休假小时,事假小时,病假扣款,事假扣款,';
-  csv += '个人养老,个人医疗,个人失业,个人生育,个人工伤,个人社保合计,';
-  csv += '单位养老,单位医疗,单位失业,单位生育,单位工伤,单位社保合计,';
+  csv += `个人养老(${si.pension.personal}%),个人医疗(${si.medical.personal}%),个人失业(${si.unemployment.personal}%),个人生育(${si.maternity.personal}%),个人工伤(${si.injury.personal}%),个人社保合计,`;
+  csv += `单位养老(${si.pension.unit}%),单位医疗(${si.medical.unit}%),单位失业(${si.unemployment.unit}%),单位生育(${si.maternity.unit}%),单位工伤(${si.injury.unit}%),单位社保合计,`;
   csv += '实发工资,单位社保总额,企业用人总成本\n';
 
   employees.forEach(emp => {
     const calc = calcEmployee(emp);
     const formalSalary = emp.monthlySalary;
-    const probationSalary = emp.probationSalary || (formalSalary * probationSettings.discount / 100);
-    const probationMonths = emp.probationMonths || probationSettings.months;
+    const probationMonths = emp.probationMonths != null ? emp.probationMonths : probationSettings.months;
+    const probationSalary = probationMonths === 0 ? formalSalary : (emp.probationSalary || (formalSalary * probationSettings.discount / 100));
     const probationEndDateStr = calc.probationEndDate ? calc.probationEndDate.toISOString().split('T')[0] : '';
     const hireDateStr = emp.hireDate || '';
 
