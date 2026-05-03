@@ -263,6 +263,7 @@ function render() {
   const statusInfo = document.getElementById('statusInfo');
   const exportBtn = document.getElementById('exportBtn');
   const settingsBtn = document.getElementById('settingsBtn');
+  const clearBtn = document.getElementById('clearBtn');
   const employeeCount = document.getElementById('employeeCount');
 
   if (!employees.length) {
@@ -273,6 +274,7 @@ function render() {
     employeeCount.style.display = 'none';
     exportBtn.style.display = 'none';
     settingsBtn.style.display = 'none';
+    clearBtn.style.display = 'none';
     return;
   }
 
@@ -281,6 +283,7 @@ function render() {
   summaryWrap.style.display = '';
   exportBtn.style.display = '';
   settingsBtn.style.display = '';
+  clearBtn.style.display = '';
   statusInfo.textContent = '';
   employeeCount.textContent = `共 ${employees.length} 名员工`;
   employeeCount.style.display = '';
@@ -368,15 +371,16 @@ function render() {
     const isFormal = calc.probationDays === 0;
     const isTransition = calc.probationDays > 0 && calc.formalDays > 0;
 
+    const probationDisabled = isFormal ? 'disabled' : '';
     html += `<tr>
       <td class="stat-value" style="text-align:center;color:var(--text-light)">${idx + 1}</td>
       <td class="td-name"><div class="employee-name">${escHtml(emp.name)}</div><div class="employee-dept">${escHtml(emp.employeeId)}</div></td>
       <td class="dept-col">${escHtml(emp.dept)}</td>
       <td><input type="number" class="salary-input" value="${emp.monthlySalary}" min="0" step="100" data-idx="${idx}" onchange="updateSalary(${idx}, this.value)"></td>
       <td>
-        <input type="number" class="salary-input" value="${probationSalary}" min="0" step="100" style="width:80px" onchange="updateEmployeeProbationSalary(${idx}, this.value)">
+        <input type="number" class="salary-input" value="${probationSalary}" min="0" step="100" style="width:80px${isFormal ? ';opacity:0.5' : ''}" ${probationDisabled} onchange="updateEmployeeProbationSalary(${idx}, this.value)">
         <br><small style="color:var(--text-light)">
-          <input type="number" class="rate-input" value="${probationMonths}" min="0" max="12" step="1" style="width:40px" onchange="updateEmployeeProbationMonths(${idx}, this.value)">个月
+          <input type="number" class="rate-input" value="${probationMonths}" min="0" max="12" step="1" style="width:40px${isFormal ? ';opacity:0.5' : ''}" ${probationDisabled} onchange="updateEmployeeProbationMonths(${idx}, this.value)">个月
         </small>
       </td>
       <td class="stat-value" style="text-align:center">
@@ -497,6 +501,17 @@ function updateDerivedHours(emp) {
 // ======= Modal Settings =======
 function openSettings() {
   document.getElementById('settingsModal').classList.add('active');
+}
+
+function clearAll() {
+  if (!confirm('确定要清空当前列表数据吗？（已保存的员工薪资设置不会被清除）')) return;
+  employees = [];
+  localStorage.removeItem(EMPLOYEES_CACHE_KEY);
+  localStorage.removeItem(FILENAME_CACHE_KEY);
+  document.getElementById('fileName').textContent = '';
+  document.getElementById('fileName').parentElement.classList.remove('has-file');
+  document.getElementById('fileInput').value = '';
+  render();
 }
 
 function closeSettings() {
@@ -629,6 +644,7 @@ function loadEmployeesFromCache() {
     const raw = localStorage.getItem(EMPLOYEES_CACHE_KEY);
     if (!raw) return false;
     employees = JSON.parse(raw);
+    loadEmployeeCache(employees);
     // Restore filename display
     const cachedName = localStorage.getItem(FILENAME_CACHE_KEY);
     if (cachedName) {
@@ -715,6 +731,26 @@ function exportCSV() {
   if (newHireWithInsurance.length > 0) {
     const names = newHireWithInsurance.map(e => e.name).join('、');
     const confirmed = confirm(`以下当月入职员工已勾选缴纳社保：${names}\n\n当月入职员工通常无需缴纳当月社保，请确认是否继续导出？`);
+    if (!confirmed) return;
+  }
+
+  // 校验试用期员工是否勾选了缴纳社保
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const probationWithInsurance = employees.filter(emp => {
+    if (!emp.hireDate || emp.paySocialInsurance === false) return false;
+    const months = emp.probationMonths != null ? emp.probationMonths : probationSettings.months;
+    if (months === 0) return false;
+    const hire = new Date(emp.hireDate);
+    const endDate = new Date(hire);
+    endDate.setMonth(endDate.getMonth() + months);
+    endDate.setDate(endDate.getDate() - 1);
+    return today <= endDate;
+  });
+
+  if (probationWithInsurance.length > 0) {
+    const names = probationWithInsurance.map(e => e.name).join('、');
+    const confirmed = confirm(`以下试用期员工已勾选缴纳社保：${names}\n\n试用期员工通常无需缴纳社保，请确认是否继续导出？`);
     if (!confirmed) return;
   }
 

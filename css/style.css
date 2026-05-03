@@ -98,6 +98,12 @@ body {
   color: var(--text);
 }
 .btn-outline:hover { background: var(--gray-light); }
+.btn-outline-danger {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+.btn-outline-danger:hover { background: #fdf0ef; }
 
 /* Table */
 .table-wrap {
