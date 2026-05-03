@@ -15,6 +15,8 @@ let probationSettings = {
   months: 3     // 默认试用期月数
 };
 
+let salaryPeriod = null; // e.g. "2026年04月"
+
 // ======= Parse Daily Attendance =======
 function parseDailyStatus(val) {
   if (!val || val === '-') return { type: 'none', title: '-' };
@@ -81,6 +83,13 @@ function parseExcel(data) {
     // Extract date from "2026-04-01 星期三" format
     const dateMatch = header.match(/(\d{4}-\d{2}-\d{2})/);
     dailyDates.push(dateMatch ? dateMatch[1] : null);
+  }
+
+  // Extract salary period (year-month) from the first available date
+  const firstDate = dailyDates.find(d => d);
+  if (firstDate) {
+    const [y, m] = firstDate.split('-');
+    salaryPeriod = `${y}年${m}月`;
   }
 
   return dataRows.map((r, idx) => {
@@ -224,15 +233,30 @@ function calcEmployee(emp) {
     siTotal = pensionDeduction + medicalDeduction + unemploymentDeduction + maternityDeduction + injuryDeduction;
   }
 
-  // Net salary: 月薪 − 事假扣 − 病假扣 − 社保
-  const netSalary = weightedMonthlySalary - personalDeduction - sickDeduction - siTotal;
+  // 本月入职：按实际出勤天数×日薪作为基数，而非满月月薪
+  let isNewHireThisMonth = false;
+  let base = weightedMonthlySalary;
+  if (emp.hireDate) {
+    const firstDailyDate = emp.daily.find(d => d.date);
+    if (firstDailyDate) {
+      const [py, pm] = firstDailyDate.date.split('-');
+      const [hy, hm] = emp.hireDate.split('-');
+      if (py === hy && pm === hm) {
+        isNewHireThisMonth = true;
+        base = emp.actualDays * dailySalary;
+      }
+    }
+  }
+
+  // Net salary
+  const netSalary = base - personalDeduction - sickDeduction - siTotal;
 
   return {
     dailySalary, hourlySalary, weightedMonthlySalary, probationEndDate,
     probationDays, formalDays, probationSalary,
     personalDeduction, sickDeduction,
     pensionDeduction, medicalDeduction, unemploymentDeduction, maternityDeduction, injuryDeduction,
-    siTotal, netSalary
+    siTotal, netSalary, isNewHireThisMonth, base
   };
 }
 
@@ -266,7 +290,7 @@ function render() {
   settingsBtn.style.display = '';
   clearBtn.style.display = '';
   statusInfo.textContent = '';
-  employeeCount.textContent = `共 ${employees.length} 名员工`;
+  employeeCount.textContent = `共 ${employees.length} 名员工` + (salaryPeriod ? ` · ${salaryPeriod}薪资明细` : '');
   employeeCount.style.display = '';
 
   // Build table
@@ -396,13 +420,15 @@ function render() {
       <td>${dailyHtml}</td>
       <td style="font-size:11px;line-height:1.5;white-space:normal;min-width:200px;color:var(--text-light)">
         ${isTransition ? `<div style="color:var(--warning)">本月转正：${calc.probationDays}天试用 + ${calc.formalDays}天正式</div>` : ''}
+        ${calc.isNewHireThisMonth ? `<div style="color:var(--primary)">本月入职</div>` : ''}
         <div>加权月薪 = ${fmtMoney(calc.weightedMonthlySalary)}</div>
         <div>日薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 21.75天 = <strong>${fmtMoney(calc.dailySalary)}</strong></div>
         <div>时薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 174h = <strong>${fmtMoney(calc.hourlySalary)}</strong></div>
+        ${calc.isNewHireThisMonth ? `<div>基数 = ${emp.actualDays}天 × ${fmtMoney(calc.dailySalary)} = <strong>${fmtMoney(calc.base)}</strong></div>` : ''}
         ${emp.personalHours > 0 ? `<div>事假扣 = ${emp.personalHours}h × ${fmtMoney(calc.hourlySalary)} = <strong>${fmtMoney(calc.personalDeduction)}</strong></div>` : ''}
         ${emp.sickHours > 0 ? `<div>病假扣 = ${emp.sickHours}h × ${fmtMoney(calc.hourlySalary)} × 30% = <strong>${fmtMoney(calc.sickDeduction)}</strong></div>` : ''}
         <div>社保扣 = <strong>${emp.paySocialInsurance !== false ? fmtMoney(calc.siTotal) : '¥0.00'}</strong> <small>(${emp.paySocialInsurance !== false ? (emp.socialInsuranceBase > 0 ? '基数' + fmtMoney(emp.socialInsuranceBase) : '按正式薪资') : '不缴纳'})</small></div>
-        <div style="color:var(--primary);font-weight:600;margin-top:2px">实发 = ${fmtMoney(calc.weightedMonthlySalary)}${emp.personalHours > 0 ? ` − ${fmtMoney(calc.personalDeduction)}` : ''}${emp.sickHours > 0 ? ` − ${fmtMoney(calc.sickDeduction)}` : ''} − ${fmtMoney(calc.siTotal)} = ${fmtMoney(calc.netSalary)}</div>
+        <div style="color:var(--primary);font-weight:600;margin-top:2px">实发 = ${fmtMoney(calc.base)}${emp.personalHours > 0 ? ` − ${fmtMoney(calc.personalDeduction)}` : ''}${emp.sickHours > 0 ? ` − ${fmtMoney(calc.sickDeduction)}` : ''} − ${fmtMoney(calc.siTotal)} = ${fmtMoney(calc.netSalary)}</div>
       </td>
     </tr>`;
   });
@@ -456,8 +482,10 @@ function openSettings() {
 function clearAll() {
   if (!confirm('确定要清空当前列表数据吗？（已保存的员工薪资设置不会被清除）')) return;
   employees = [];
+  salaryPeriod = null;
   localStorage.removeItem(EMPLOYEES_CACHE_KEY);
   localStorage.removeItem(FILENAME_CACHE_KEY);
+  localStorage.removeItem(SALARY_PERIOD_CACHE_KEY);
   document.getElementById('fileName').textContent = '';
   document.getElementById('fileName').parentElement.classList.remove('has-file');
   document.getElementById('fileInput').value = '';
@@ -536,6 +564,7 @@ function updateSocialInsuranceBase(idx, val) {
 const CACHE_KEY = 'salaryCalc Employees';
 const EMPLOYEES_CACHE_KEY = 'salaryCalc AllEmployees';
 const FILENAME_CACHE_KEY = 'salaryCalc FileName';
+const SALARY_PERIOD_CACHE_KEY = 'salaryCalc SalaryPeriod';
 
 function getCacheKey(emp) {
   return `${emp.name}|${emp.employeeId}`;
@@ -584,6 +613,7 @@ function saveEmployeesCache(fileName) {
   try {
     localStorage.setItem(EMPLOYEES_CACHE_KEY, JSON.stringify(employees));
     if (fileName) localStorage.setItem(FILENAME_CACHE_KEY, fileName);
+    if (salaryPeriod) localStorage.setItem(SALARY_PERIOD_CACHE_KEY, salaryPeriod);
   } catch (e) {
     console.warn('Failed to save employees cache:', e);
   }
@@ -601,6 +631,9 @@ function loadEmployeesFromCache() {
       document.getElementById('fileName').textContent = cachedName;
       document.getElementById('fileName').parentElement.classList.add('has-file');
     }
+    // Restore salary period
+    const cachedPeriod = localStorage.getItem(SALARY_PERIOD_CACHE_KEY);
+    if (cachedPeriod) salaryPeriod = cachedPeriod;
     return true;
   } catch (e) {
     console.warn('Failed to load employees cache:', e);
