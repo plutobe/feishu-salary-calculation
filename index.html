@@ -777,8 +777,18 @@ function calcEmployee(emp) {
     : formalSalary;
 
   // 按实际出勤天数比例折算月薪
-  const attendanceRatio = (emp.actualDays > 0 && emp.requiredDays > 0)
-    ? Math.min(emp.actualDays / emp.requiredDays, 1)
+  // 整月员工 & 满勤 → 1.0；整月员工 & 未满勤 → actual/required
+  // 月中入职 → actual/21.75（无论是否满勤，都非满月员工）
+  const firstDayDate = emp.daily && emp.daily[0] && emp.daily[0].date;
+  const isFullMonthEmployee = !(emp.hireDate && firstDayDate
+    && emp.hireDate.substring(0, 7) === firstDayDate.substring(0, 7));
+  const isFullAttendance = emp.actualDays >= emp.requiredDays;
+  const attendanceRatio = emp.actualDays > 0 && emp.requiredDays > 0
+    ? (isFullMonthEmployee && isFullAttendance
+      ? 1
+      : isFullMonthEmployee
+        ? emp.actualDays / emp.requiredDays
+        : emp.actualDays / 21.75)
     : 1;
   const proratedBase = weightedMonthlySalary * attendanceRatio;
 
@@ -813,7 +823,7 @@ function calcEmployee(emp) {
   const netSalary = proratedBase - sickDeduction - personalDeduction - siTotal;
 
   return {
-    dailySalary, hourlySalary, weightedMonthlySalary, attendanceRatio, proratedBase, probationEndDate,
+    dailySalary, hourlySalary, weightedMonthlySalary, attendanceRatio, proratedBase, isFullMonthEmployee, probationEndDate,
     probationDays, formalDays, probationSalary,
     sickDeduction, personalDeduction,
     pensionDeduction, medicalDeduction, unemploymentDeduction, maternityDeduction, injuryDeduction,
@@ -968,7 +978,7 @@ function render() {
         <div>加权月薪 = ${fmtMoney(calc.weightedMonthlySalary)}</div>
         <div>日薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 21.75天 = <strong>${fmtMoney(calc.dailySalary)}</strong></div>
         <div>时薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 174h = <strong>${fmtMoney(calc.hourlySalary)}</strong></div>
-        ${calc.attendanceRatio < 1 ? `<div>出勤比 = ${emp.actualDays}/${emp.requiredDays} = ${(calc.attendanceRatio * 100).toFixed(1)}%</div>
+        ${calc.attendanceRatio < 1 ? `<div>出勤比 = ${emp.actualDays}/${calc.isFullMonthEmployee ? emp.requiredDays + '天' : '21.75天'} = ${(calc.attendanceRatio * 100).toFixed(1)}%</div>
         <div>折算月薪 = ${fmtMoney(calc.weightedMonthlySalary)} × ${(calc.attendanceRatio * 100).toFixed(1)}% = <strong>${fmtMoney(calc.proratedBase)}</strong></div>` : ''}
         ${emp.sickHours > 0 ? `<div>病假扣 = ${emp.sickHours}h × ${fmtMoney(calc.hourlySalary)} × 30% = <strong>${fmtMoney(calc.sickDeduction)}</strong></div>` : ''}
         ${emp.personalHours > 0 ? `<div>事假扣 = ${emp.personalHours}h × ${fmtMoney(calc.hourlySalary)} = <strong>${fmtMoney(calc.personalDeduction)}</strong></div>` : ''}
