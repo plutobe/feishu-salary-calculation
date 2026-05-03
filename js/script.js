@@ -149,12 +149,6 @@ function calcHalfDayHours(emp) {
   return (emp.requiredHours / emp.requiredDays) / 2;
 }
 
-function roundToHalfDay(hours, emp) {
-  const halfDay = calcHalfDayHours(emp);
-  if (halfDay <= 0) return hours;
-  return Math.round(hours / halfDay) * halfDay;
-}
-
 // ======= Calculations (按国家规定21.75天) =======
 function calcEmployee(emp) {
   const formalSalary = emp.monthlySalary;
@@ -202,32 +196,21 @@ function calcEmployee(emp) {
 
   // 按实际出勤天数比例折算月薪
   // 整月员工 & 满勤 → 1.0；其他情况 → actual/21.75
+  // 调休为带薪假，应计入有效出勤天数
   const firstDayDate = emp.daily && emp.daily[0] && emp.daily[0].date;
   const isFullMonthEmployee = !(emp.hireDate && firstDayDate
     && emp.hireDate.substring(0, 7) === firstDayDate.substring(0, 7));
-  const isFullAttendance = emp.actualDays >= emp.requiredDays;
+  const dailyHours = emp.requiredDays > 0 ? emp.requiredHours / emp.requiredDays : 8;
+  const compDays = dailyHours > 0 ? emp.compHours / dailyHours : 0;
+  const effectiveDays = emp.actualDays + compDays;
+  const isFullAttendance = effectiveDays >= emp.requiredDays;
   const attendanceRatio = emp.actualDays > 0 && emp.requiredDays > 0
-    ? (isFullMonthEmployee && isFullAttendance ? 1 : emp.actualDays / 21.75)
+    ? (isFullMonthEmployee && isFullAttendance ? 1 : effectiveDays / 21.75)
     : 1;
   const proratedBase = weightedMonthlySalary * attendanceRatio;
 
   const dailySalary = weightedMonthlySalary / 21.75;
   const hourlySalary = weightedMonthlySalary / 174; // 21.75 × 8
-
-  // Sick leave deduction - use the daily salary for the day of leave
-  let sickDeduction = 0;
-  if (emp.sickHours > 0) {
-    // Find which days are sick leave and use appropriate salary
-    const sickHourlySalary = hourlySalary; // Use weighted average for simplicity
-    sickDeduction = emp.sickHours * sickHourlySalary * 0.3;
-  }
-
-  // Personal leave deduction
-  let personalDeduction = 0;
-  if (emp.personalHours > 0) {
-    const personalHourlySalary = hourlySalary;
-    personalDeduction = emp.personalHours * personalHourlySalary;
-  }
 
   // 社保个人扣款
   let siTotal = 0;
@@ -244,14 +227,13 @@ function calcEmployee(emp) {
   }
 
   // Net salary: prorate base salary by attendance ratio, then subtract deductions
-  const netSalary = proratedBase - sickDeduction - personalDeduction - siTotal;
+  const netSalary = proratedBase - siTotal;
 
   return {
     dailySalary, hourlySalary, weightedMonthlySalary, attendanceRatio, proratedBase, probationEndDate,
     probationDays, formalDays, probationSalary,
-    sickDeduction, personalDeduction,
     pensionDeduction, medicalDeduction, unemploymentDeduction, maternityDeduction, injuryDeduction,
-    siTotal, netSalary
+    siTotal, netSalary, compDays, effectiveDays
   };
 }
 
@@ -303,10 +285,8 @@ function render() {
     '<th>实际出勤<br><small>天</small></th>' +
     '<th>缺勤<br><small>小时</small></th>' +
     '<th>病假<br><small>小时</small></th>' +
-    '<th>调休<br><small>小时</small></th>' +
     '<th>事假<br><small>小时</small></th>' +
-    '<th>病假扣款</th>' +
-    '<th>事假扣款</th>' +
+    '<th>调休<br><small>小时</small></th>' +
     '<th>社保合计</th>' +
     '<th>实发工资</th>' +
     '<th>每日考勤</th>' +
@@ -314,8 +294,6 @@ function render() {
     '</tr></thead><tbody>';
 
   let totalSalary = 0;
-  let totalSickDed = 0;
-  let totalPersonalDed = 0;
   let totalSi = 0;
   let totalCompanySi = 0;
   let totalNet = 0;
@@ -324,8 +302,6 @@ function render() {
   employees.forEach((emp, idx) => {
     const calc = calcEmployee(emp);
     totalSalary += emp.monthlySalary;
-    totalSickDed += calc.sickDeduction;
-    totalPersonalDed += calc.personalDeduction;
     totalSi += calc.siTotal;
     totalNet += calc.netSalary;
 
@@ -400,18 +376,14 @@ function render() {
       <td class="stat-value">${emp.actualDays}</td>
       <td class="stat-value ${emp.absenceHours - emp.compHours > 0 ? 'stat-negative' : ''}">${(emp.absenceHours - emp.compHours).toFixed(1)}</td>
       <td>
-        <input type="number" class="leave-input" value="${emp.sickHours}" min="0" max="${emp.absenceHours - emp.compHours}" step="${halfDay}" data-idx="${idx}" onchange="updateSick(${idx}, this.value)">
-        <br><small style="color:var(--text-light)">0.5天=${halfDay}h</small>
-      </td>
-      <td>
-        <input type="number" class="leave-input" value="${emp.compHours}" min="0" max="${emp.absenceHours}" step="${halfDay}" data-idx="${idx}" onchange="updateComp(${idx}, this.value)">
-        <br><small style="color:var(--text-light)">0.5天=${halfDay}h</small>
+        <span class="stat-value" id="sickHours_${idx}">${emp.sickHours.toFixed(1)}</span>
       </td>
       <td>
         <span class="stat-value" id="personalHours_${idx}">${emp.personalHours.toFixed(1)}</span>
       </td>
-      <td class="stat-negative stat-money">${fmtMoney(calc.sickDeduction)}</td>
-      <td class="stat-negative stat-money">${fmtMoney(calc.personalDeduction)}</td>
+      <td>
+        <span class="stat-value" id="compHours_${idx}">${emp.compHours.toFixed(1)}</span>
+      </td>
       <td class="stat-negative stat-money" style="font-weight:700">${fmtMoney(calc.siTotal)}</td>
       <td class="stat-final">${fmtMoney(calc.netSalary)}</td>
       <td>${dailyHtml}</td>
@@ -420,13 +392,11 @@ function render() {
         <div>加权月薪 = ${fmtMoney(calc.weightedMonthlySalary)}</div>
         <div>日薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 21.75天 = <strong>${fmtMoney(calc.dailySalary)}</strong></div>
         <div>时薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 174h = <strong>${fmtMoney(calc.hourlySalary)}</strong></div>
-        ${calc.attendanceRatio < 1 ? `<div>出勤比 = ${emp.actualDays}/21.75天 = ${(calc.attendanceRatio * 100).toFixed(1)}%</div>
+        ${calc.attendanceRatio < 1 ? `<div>出勤比 = ${emp.compHours > 0 ? `${emp.actualDays}天+${emp.compHours}h调休(${calc.compDays.toFixed(1)}天)=${calc.effectiveDays.toFixed(1)}天` : emp.actualDays}/21.75天 = ${(calc.attendanceRatio * 100).toFixed(1)}%</div>
         <div>折算月薪 = ${fmtMoney(calc.weightedMonthlySalary)} × ${(calc.attendanceRatio * 100).toFixed(1)}% = <strong>${fmtMoney(calc.proratedBase)}</strong></div>` : ''}
-        ${emp.sickHours > 0 ? `<div>病假扣 = ${emp.sickHours}h × ${fmtMoney(calc.hourlySalary)} × 30% = <strong>${fmtMoney(calc.sickDeduction)}</strong></div>` : ''}
-        ${emp.personalHours > 0 ? `<div>事假扣 = ${emp.personalHours}h × ${fmtMoney(calc.hourlySalary)} = <strong>${fmtMoney(calc.personalDeduction)}</strong></div>` : ''}
         ${emp.compHours > 0 ? '<div>调休假 = 不扣款</div>' : ''}
         <div>社保扣 = <strong>${emp.paySocialInsurance !== false ? fmtMoney(calc.siTotal) : '¥0.00'}</strong> <small>(${emp.paySocialInsurance !== false ? (emp.socialInsuranceBase > 0 ? '基数' + fmtMoney(emp.socialInsuranceBase) : '按正式薪资') : '不缴纳'})</small></div>
-        <div style="color:var(--primary);font-weight:600;margin-top:2px">实发 = ${fmtMoney(calc.proratedBase)} − ${fmtMoney(calc.sickDeduction)} − ${fmtMoney(calc.personalDeduction)} − ${fmtMoney(calc.siTotal)} = ${fmtMoney(calc.netSalary)}</div>
+        <div style="color:var(--primary);font-weight:600;margin-top:2px">实发 = ${fmtMoney(calc.proratedBase)} − ${fmtMoney(calc.siTotal)} = ${fmtMoney(calc.netSalary)}</div>
       </td>
     </tr>`;
   });
@@ -441,8 +411,6 @@ function render() {
   document.getElementById('summaryGrid').innerHTML = `
     <div class="summary-card"><div class="label">员工总数</div><div class="value">${totalEmployees}</div></div>
     <div class="summary-card"><div class="label">应发工资总额</div><div class="value primary">${fmtMoney(totalSalary)}</div></div>
-    <div class="summary-card"><div class="label">病假扣款总额</div><div class="value danger">${fmtMoney(totalSickDed)}</div></div>
-    <div class="summary-card"><div class="label">事假扣款总额</div><div class="value danger">${fmtMoney(totalPersonalDed)}</div></div>
     <div class="summary-card"><div class="label">个人社保总额</div><div class="value danger">${fmtMoney(totalSi)}</div></div>
     <div class="summary-card"><div class="label">实发工资总额</div><div class="value success">${fmtMoney(totalNet)}</div></div>
     <div class="summary-card"><div class="label">单位社保总额</div><div class="value" style="color:#e67e22">${fmtMoney(totalCompanySi)}</div></div>
@@ -462,32 +430,6 @@ function updateSalary(idx, val) {
     }
     updateDerivedHours(emp);
     saveEmployeeCache(emp);
-    render();
-  }
-}
-
-function updateSick(idx, val) {
-  if (idx >= 0 && idx < employees.length) {
-    const emp = employees[idx];
-    const halfDay = calcHalfDayHours(emp);
-    let hours = parseFloat(val) || 0;
-    hours = roundToHalfDay(hours, emp);
-    hours = Math.max(0, Math.min(hours, emp.absenceHours - emp.compHours));
-    emp.sickHours = hours;
-    updateDerivedHours(emp);
-    render();
-  }
-}
-
-function updateComp(idx, val) {
-  if (idx >= 0 && idx < employees.length) {
-    const emp = employees[idx];
-    const halfDay = calcHalfDayHours(emp);
-    let hours = parseFloat(val) || 0;
-    hours = roundToHalfDay(hours, emp);
-    hours = Math.max(0, Math.min(hours, emp.absenceHours - emp.sickHours));
-    emp.compHours = hours;
-    updateDerivedHours(emp);
     render();
   }
 }
@@ -756,7 +698,7 @@ function exportCSV() {
 
   // Calculate company contribution totals
   const si = socialInsurance;
-  let csv = '﻿姓名,工号,部门,入职日期,转正日期,正式月薪,试用期月薪,试用期月数,是否缴纳社保,社保基数,应出勤天数,实际出勤天数,缺勤小时,病假小时,调休假小时,事假小时,病假扣款,事假扣款,';
+  let csv = '﻿姓名,工号,部门,入职日期,转正日期,正式月薪,试用期月薪,试用期月数,是否缴纳社保,社保基数,应出勤天数,实际出勤天数,缺勤小时,病假小时,事假小时,调休假小时,';
   csv += `个人养老(${si.pension.personal}%),个人医疗(${si.medical.personal}%),个人失业(${si.unemployment.personal}%),个人生育(${si.maternity.personal}%),个人工伤(${si.injury.personal}%),个人社保合计,`;
   csv += `单位养老(${si.pension.unit}%),单位医疗(${si.medical.unit}%),单位失业(${si.unemployment.unit}%),单位生育(${si.maternity.unit}%),单位工伤(${si.injury.unit}%),单位社保合计,`;
   csv += '实发工资,单位社保总额,企业用人总成本\n';
@@ -780,8 +722,8 @@ function exportCSV() {
     const totalCost = calc.netSalary + companySiTotal;
 
     csv += `${emp.name},${emp.employeeId},${emp.dept},${hireDateStr},${probationEndDateStr},${formalSalary},${probationSalary},${probationMonths},${emp.paySocialInsurance !== false ? '是' : '否'},${emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : formalSalary},`;
-    csv += `${emp.requiredDays},${emp.actualDays},${(emp.absenceHours - emp.compHours).toFixed(1)},${emp.sickHours},${emp.compHours},${emp.personalHours},`;
-    csv += `${calc.sickDeduction.toFixed(2)},${calc.personalDeduction.toFixed(2)},`;
+    csv += `${emp.requiredDays},${emp.actualDays},${(emp.absenceHours - emp.compHours).toFixed(1)},${emp.sickHours},${emp.personalHours},${emp.compHours},`;
+    csv += ``;
     csv += `${calc.pensionDeduction.toFixed(2)},${calc.medicalDeduction.toFixed(2)},${calc.unemploymentDeduction.toFixed(2)},${calc.maternityDeduction.toFixed(2)},${calc.injuryDeduction.toFixed(2)},${calc.siTotal.toFixed(2)},`;
     csv += `${companyPension.toFixed(2)},${companyMedical.toFixed(2)},${companyUnemployment.toFixed(2)},${companyMaternity.toFixed(2)},${companyInjury.toFixed(2)},${companySiTotal.toFixed(2)},`;
     csv += `${calc.netSalary.toFixed(2)},${companySiTotal.toFixed(2)},${totalCost.toFixed(2)}\n`;
