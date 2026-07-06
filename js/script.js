@@ -16,6 +16,19 @@ let probationSettings = {
 };
 
 let salaryPeriod = null; // e.g. "2026年04月"
+const leaveUpdateTimers = {};
+
+// 全体公民放假的法定节假日。计薪日统计按工作日计算，并确保这些日期即使
+// 落在周末也作为带薪日。2026 年日期依据国务院年度放假通知及现行放假办法。
+const statutoryHolidays = new Set([
+  '2026-01-01',
+  '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19',
+  '2026-04-05',
+  '2026-05-01', '2026-05-02',
+  '2026-06-19',
+  '2026-09-25',
+  '2026-10-01', '2026-10-02', '2026-10-03',
+]);
 
 // ======= Parse Daily Attendance =======
 function parseDailyStatus(val) {
@@ -39,11 +52,11 @@ function parseDailyStatus(val) {
   return { type: 'none', title: s.substring(0, 10) };
 }
 
-/** Parse 调休假 hours from daily value like "请假(-),请假(-);调休假(08:30-12:00,13:30-18:00)" */
-function extractCompHoursFromDaily(val) {
+/** Parse leave hours from values like "调休假(08:30-12:00,13:30-18:00)". */
+function extractLeaveHoursFromDaily(val, leaveName) {
   if (!val) return 0;
   const s = String(val);
-  const match = s.match(/调休假\(([^)]+)\)/);
+  const match = s.match(new RegExp(`${leaveName}\\(([^)]+)\\)`));
   if (!match) return 0;
   const ranges = match[1].split(',');
   let total = 0;
@@ -55,6 +68,34 @@ function extractCompHoursFromDaily(val) {
       const endMin = timeToMinutes(end);
       if (endMin > startMin) total += (endMin - startMin) / 60;
     }
+  }
+  return total;
+}
+
+function extractCompHoursFromDaily(val) {
+  return extractLeaveHoursFromDaily(val, '调休假');
+}
+
+function parseIsoDate(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function formatIsoDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function countPayableDays(startDateStr, endDateStr) {
+  const start = parseIsoDate(startDateStr);
+  const end = parseIsoDate(endDateStr);
+  let total = 0;
+  for (const date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+    const iso = formatIsoDate(date);
+    const weekday = date.getDay();
+    if ((weekday >= 1 && weekday <= 5) || statutoryHolidays.has(iso)) total++;
   }
   return total;
 }
@@ -113,6 +154,8 @@ function parseExcel(data) {
     // Build daily attendance with dates
     const daily = [];
     let autoCompHours = 0;
+    let autoPersonalHours = 0;
+    let autoSickHours = 0;
     for (let d = dailyColStart; d <= dailyColEnd; d++) {
       const val = r[d];
       const status = parseDailyStatus(val);
@@ -121,11 +164,15 @@ function parseExcel(data) {
       if (status.type === 'comp') {
         autoCompHours += extractCompHoursFromDaily(val);
       }
+      autoPersonalHours += extractLeaveHoursFromDaily(val, '事假');
+      autoSickHours += extractLeaveHoursFromDaily(val, '病假');
     }
 
-    // Pre-fill: round comp hours to half-day unit
-    const halfDay = monthlyHours && monthlyDays ? (monthlyHours / monthlyDays / 2) : 4;
-    const compHours = autoCompHours > 0 ? Math.round(autoCompHours / halfDay) * halfDay : 0;
+    // 调休按实际审批小时带薪，不按半天四舍五入。假别可在页面中修正，以处理
+    // 源表假别录入错误；剩余未标明假别的缺勤默认计入事假。
+    const classifiedHours = autoCompHours + autoPersonalHours + autoSickHours;
+    const unclassifiedHours = Math.max(0, absenceHours - classifiedHours);
+    const personalHours = autoPersonalHours + unclassifiedHours;
 
     return {
       id: idx,
@@ -144,18 +191,22 @@ function parseExcel(data) {
       absenceHours: absenceHours,
       overtimeHours: parseFloat(r[34]) || 0, // Col AJ (35), 0-indexed 34
       // editable
-      sickHours: 0,
-      compHours: compHours,
-      personalHours: Math.max(0, absenceHours - compHours),
+      sickHours: autoSickHours,
+      compHours: autoCompHours,
+      personalHours: personalHours,
       daily: daily,
     };
   });
 }
 
-// ======= Half-day rounding =======
-function calcHalfDayHours(emp) {
-  if (!emp.requiredHours || !emp.requiredDays) return 4;
-  return (emp.requiredHours / emp.requiredDays) / 2;
+function calcPaidAttendanceDays(emp) {
+  const hoursPerDay = emp.requiredDays > 0 ? emp.requiredHours / emp.requiredDays : 8;
+  if (hoursPerDay <= 0) return emp.actualDays;
+  return Math.min(emp.requiredDays, emp.actualDays + emp.compHours / hoursPerDay);
+}
+
+function calcDeductibleAbsenceHours(emp) {
+  return emp.sickHours + emp.personalHours;
 }
 
 // ======= Calculations (按国家规定21.75天) =======
@@ -238,8 +289,11 @@ function calcEmployee(emp) {
     siTotal = pensionDeduction + medicalDeduction + unemploymentDeduction + maternityDeduction + injuryDeduction;
   }
 
-  // 本月入职：按实际出勤天数×日薪作为基数，而非满月月薪
+  // 本月入职：1 日入职按整月工资；月中入职按入职日至月底的计薪日折算。
+  // 计薪日包含周一至周五及法定节假日，事假在基数之后另行扣除。
   let isNewHireThisMonth = false;
+  let isFirstDayHire = false;
+  let payableDays = null;
   let base = weightedMonthlySalary;
   if (emp.hireDate) {
     const firstDailyDate = emp.daily.find(d => d.date);
@@ -248,7 +302,14 @@ function calcEmployee(emp) {
       const [hy, hm] = emp.hireDate.split('-');
       if (py === hy && pm === hm) {
         isNewHireThisMonth = true;
-        base = emp.actualDays * dailySalary;
+        isFirstDayHire = Number(emp.hireDate.split('-')[2]) === 1;
+        if (!isFirstDayHire) {
+          const periodEnd = emp.daily.filter(d => d.date).at(-1)?.date;
+          if (periodEnd) {
+            payableDays = countPayableDays(emp.hireDate, periodEnd);
+            base = Math.min(weightedMonthlySalary, payableDays * dailySalary);
+          }
+        }
       }
     }
   }
@@ -261,7 +322,7 @@ function calcEmployee(emp) {
     probationDays, formalDays, probationSalary,
     personalDeduction, sickDeduction,
     pensionDeduction, medicalDeduction, unemploymentDeduction, maternityDeduction, injuryDeduction,
-    siTotal, netSalary, isNewHireThisMonth, base
+    siTotal, netSalary, isNewHireThisMonth, isFirstDayHire, payableDays, base
   };
 }
 
@@ -310,8 +371,8 @@ function render() {
     '<th>入职日期</th>' +
     '<th>转正日期</th>' +
     '<th>应出勤<br><small>天</small></th>' +
-    '<th>实际出勤<br><small>天</small></th>' +
-    '<th>缺勤<br><small>小时</small></th>' +
+    '<th>计薪出勤<br><small>天，含调休</small></th>' +
+    '<th>扣薪缺勤<br><small>小时</small></th>' +
     '<th>病假<br><small>小时</small></th>' +
     '<th>事假<br><small>小时</small></th>' +
     '<th>调休<br><small>小时</small></th>' +
@@ -333,6 +394,8 @@ function render() {
 
   employees.forEach((emp, idx) => {
     const calc = calcEmployee(emp);
+    const paidAttendanceDays = calcPaidAttendanceDays(emp);
+    const deductibleAbsenceHours = calcDeductibleAbsenceHours(emp);
     totalSalary += emp.monthlySalary;
     totalPersonalDed += calc.personalDeduction;
     totalSickDed += calc.sickDeduction;
@@ -374,7 +437,6 @@ function render() {
     }
     dailyHtml += '</div>';
 
-    const halfDay = calcHalfDayHours(emp);
     const probationMonths = emp.probationMonths != null ? emp.probationMonths : probationSettings.months;
     const probationSalary = probationMonths === 0 ? emp.monthlySalary : (emp.probationSalary || (emp.monthlySalary * probationSettings.discount / 100));
     const probationEndDateStr = calc.probationEndDate ? calc.probationEndDate.toISOString().split('T')[0] : '-';
@@ -409,16 +471,16 @@ function render() {
         ${isFormal && emp.hireDate ? '<br><small style="color:var(--success)">已转正</small>' : ''}
       </td>
       <td class="stat-value">${emp.requiredDays}</td>
-      <td class="stat-value">${emp.actualDays}</td>
-      <td class="stat-value ${emp.absenceHours - emp.compHours > 0 ? 'stat-negative' : ''}">${(emp.absenceHours - emp.compHours).toFixed(1)}</td>
+      <td class="stat-value">${Number(paidAttendanceDays.toFixed(3))}</td>
+      <td class="stat-value ${deductibleAbsenceHours > 0 ? 'stat-negative' : ''}">${deductibleAbsenceHours.toFixed(1)}</td>
       <td>
-        <span class="stat-value" id="sickHours_${idx}">${emp.sickHours.toFixed(1)}</span>
+        <input type="number" class="leave-input" value="${emp.sickHours}" min="0" step="0.5" aria-label="${escHtml(emp.name)}病假小时" oninput="scheduleLeaveHoursUpdate(${idx}, 'sickHours', this.value)">
       </td>
       <td>
-        <span class="stat-value" id="personalHours_${idx}">${emp.personalHours.toFixed(1)}</span>
+        <input type="number" class="leave-input" value="${emp.personalHours}" min="0" step="0.5" aria-label="${escHtml(emp.name)}事假小时" oninput="scheduleLeaveHoursUpdate(${idx}, 'personalHours', this.value)">
       </td>
       <td>
-        <span class="stat-value" id="compHours_${idx}">${emp.compHours.toFixed(1)}</span>
+        <input type="number" class="leave-input" value="${emp.compHours}" min="0" step="0.5" aria-label="${escHtml(emp.name)}调休小时" oninput="scheduleLeaveHoursUpdate(${idx}, 'compHours', this.value)">
       </td>
       <td class="stat-negative stat-money">${fmtMoney(calc.personalDeduction)}</td>
       <td class="stat-negative stat-money">${fmtMoney(calc.sickDeduction)}</td>
@@ -431,7 +493,8 @@ function render() {
         <div>加权月薪 = ${fmtMoney(calc.weightedMonthlySalary)}</div>
         <div>日薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 21.75天 = <strong>${fmtMoney(calc.dailySalary)}</strong></div>
         <div>时薪 = ${fmtMoney(calc.weightedMonthlySalary)} ÷ 174h = <strong>${fmtMoney(calc.hourlySalary)}</strong></div>
-        ${calc.isNewHireThisMonth ? `<div>基数 = ${emp.actualDays}天 × ${fmtMoney(calc.dailySalary)} = <strong>${fmtMoney(calc.base)}</strong></div>` : ''}
+        ${calc.isFirstDayHire ? `<div>基数 = 整月满勤 = <strong>${fmtMoney(calc.base)}</strong></div>` : ''}
+        ${calc.isNewHireThisMonth && !calc.isFirstDayHire ? `<div>基数 = ${calc.payableDays}个计薪日 × ${fmtMoney(calc.dailySalary)} = <strong>${fmtMoney(calc.base)}</strong></div>` : ''}
         ${emp.personalHours > 0 ? `<div>事假扣 = ${emp.personalHours}h × ${fmtMoney(calc.hourlySalary)} = <strong>${fmtMoney(calc.personalDeduction)}</strong></div>` : ''}
         ${emp.sickHours > 0 ? `<div>病假扣 = ${emp.sickHours}h × ${fmtMoney(calc.hourlySalary)} × 30% = <strong>${fmtMoney(calc.sickDeduction)}</strong></div>` : ''}
         <div>社保扣 = <strong>${emp.paySocialInsurance !== false ? fmtMoney(calc.siTotal) : '¥0.00'}</strong> <small>(${emp.paySocialInsurance !== false ? (emp.socialInsuranceBase > 0 ? '基数' + fmtMoney(emp.socialInsuranceBase) : '按正式薪资') : '不缴纳'})</small></div>
@@ -476,9 +539,25 @@ function updateSalary(idx, val) {
 }
 
 function updateDerivedHours(emp) {
-  // 调休假不算缺勤，缺勤仅含病假+事假
-  const used = emp.sickHours + emp.compHours;
-  emp.personalHours = Math.max(0, emp.absenceHours - used);
+  emp.sickHours = Math.max(0, Number(emp.sickHours) || 0);
+  emp.personalHours = Math.max(0, Number(emp.personalHours) || 0);
+  emp.compHours = Math.max(0, Number(emp.compHours) || 0);
+}
+
+function updateLeaveHours(idx, field, val) {
+  if (idx < 0 || idx >= employees.length || !['sickHours', 'personalHours', 'compHours'].includes(field)) return;
+  employees[idx][field] = Math.max(0, parseFloat(val) || 0);
+  saveEmployeesCache();
+  render();
+}
+
+function scheduleLeaveHoursUpdate(idx, field, val) {
+  const key = `${idx}:${field}`;
+  clearTimeout(leaveUpdateTimers[key]);
+  leaveUpdateTimers[key] = setTimeout(() => {
+    delete leaveUpdateTimers[key];
+    updateLeaveHours(idx, field, val);
+  }, 300);
 }
 
 // ======= Modal Settings =======
@@ -507,6 +586,7 @@ function clearAll() {
   localStorage.removeItem(EMPLOYEES_CACHE_KEY);
   localStorage.removeItem(FILENAME_CACHE_KEY);
   localStorage.removeItem(SALARY_PERIOD_CACHE_KEY);
+  localStorage.removeItem(DATA_SCHEMA_VERSION_KEY);
   document.getElementById('fileName').textContent = '';
   document.getElementById('fileName').parentElement.classList.remove('has-file');
   document.getElementById('fileInput').value = '';
@@ -590,6 +670,8 @@ const EMPLOYEES_CACHE_KEY = 'salaryCalc AllEmployees';
 const FILENAME_CACHE_KEY = 'salaryCalc FileName';
 const SALARY_PERIOD_CACHE_KEY = 'salaryCalc SalaryPeriod';
 const SETTINGS_CACHE_KEY = 'salaryCalc Settings';
+const DATA_SCHEMA_VERSION_KEY = 'salaryCalc DataSchemaVersion';
+const DATA_SCHEMA_VERSION = '2';
 
 function getCacheKey(emp) {
   return `${emp.name}|${emp.employeeId}`;
@@ -637,6 +719,7 @@ function saveEmployeeCache(emp) {
 function saveEmployeesCache(fileName) {
   try {
     localStorage.setItem(EMPLOYEES_CACHE_KEY, JSON.stringify(employees));
+    localStorage.setItem(DATA_SCHEMA_VERSION_KEY, DATA_SCHEMA_VERSION);
     if (fileName) localStorage.setItem(FILENAME_CACHE_KEY, fileName);
     if (salaryPeriod) localStorage.setItem(SALARY_PERIOD_CACHE_KEY, salaryPeriod);
   } catch (e) {
@@ -646,6 +729,10 @@ function saveEmployeesCache(fileName) {
 
 function loadEmployeesFromCache() {
   try {
+    if (localStorage.getItem(DATA_SCHEMA_VERSION_KEY) !== DATA_SCHEMA_VERSION) {
+      localStorage.removeItem(EMPLOYEES_CACHE_KEY);
+      return false;
+    }
     const raw = localStorage.getItem(EMPLOYEES_CACHE_KEY);
     if (!raw) return false;
     employees = JSON.parse(raw);
@@ -726,18 +813,22 @@ function loadFile(file) {
 
   const reader = new FileReader();
   reader.onload = function(e) {
-    try {
-      const data = new Uint8Array(e.target.result);
-      employees = parseExcel(data);
-      loadEmployeeCache(employees);
-      saveEmployeesCache(file.name);
-      render();
-    } catch (err) {
-      alert('解析 Excel 失败: ' + err.message);
-      console.error(err);
-    }
+    loadArrayBuffer(e.target.result, file.name);
   };
   reader.readAsArrayBuffer(file);
+}
+
+function loadArrayBuffer(arrayBuffer, fileName) {
+  try {
+    const data = new Uint8Array(arrayBuffer);
+    employees = parseExcel(data);
+    loadEmployeeCache(employees);
+    saveEmployeesCache(fileName);
+    render();
+  } catch (err) {
+    alert('解析 Excel 失败: ' + err.message);
+    console.error(err);
+  }
 }
 
 // ======= Export CSV =======
@@ -784,7 +875,7 @@ function exportCSV() {
 
   // Calculate company contribution totals
   const si = socialInsurance;
-  let csv = '﻿姓名,工号,部门,入职日期,转正日期,正式月薪,试用期月薪,试用期月数,是否缴纳社保,社保基数,应出勤天数,实际出勤天数,缺勤小时,病假小时,事假小时,调休假小时,事假扣款,病假扣款,';
+  let csv = '﻿姓名,工号,部门,入职日期,转正日期,正式月薪,试用期月薪,试用期月数,是否缴纳社保,社保基数,应出勤天数,计薪出勤天数(含调休),扣薪缺勤小时,病假小时,事假小时,调休假小时,事假扣款,病假扣款,';
   csv += `个人养老(${si.pension.personal}%),个人医疗(${si.medical.personal}%),个人失业(${si.unemployment.personal}%),个人生育(${si.maternity.personal}%),个人工伤(${si.injury.personal}%),个人社保合计,`;
   csv += `单位养老(${si.pension.unit}%),单位医疗(${si.medical.unit}%),单位失业(${si.unemployment.unit}%),单位生育(${si.maternity.unit}%),单位工伤(${si.injury.unit}%),单位社保合计,`;
   csv += '实发工资,单位社保总额,企业用人总成本\n';
@@ -808,7 +899,9 @@ function exportCSV() {
     const totalCost = calc.netSalary + companySiTotal;
 
     csv += `${emp.name},${emp.employeeId},${emp.dept},${hireDateStr},${probationEndDateStr},${formalSalary},${probationSalary},${probationMonths},${emp.paySocialInsurance !== false ? '是' : '否'},${emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : formalSalary},`;
-    csv += `${emp.requiredDays},${emp.actualDays},${(emp.absenceHours - emp.compHours).toFixed(1)},${emp.sickHours},${emp.personalHours},${emp.compHours},`;
+    const paidAttendanceDays = calcPaidAttendanceDays(emp);
+    const deductibleAbsenceHours = calcDeductibleAbsenceHours(emp);
+    csv += `${emp.requiredDays},${Number(paidAttendanceDays.toFixed(3))},${deductibleAbsenceHours.toFixed(1)},${emp.sickHours},${emp.personalHours},${emp.compHours},`;
     csv += `${calc.personalDeduction.toFixed(2)},${calc.sickDeduction.toFixed(2)},`;
     csv += `${calc.pensionDeduction.toFixed(2)},${calc.medicalDeduction.toFixed(2)},${calc.unemploymentDeduction.toFixed(2)},${calc.maternityDeduction.toFixed(2)},${calc.injuryDeduction.toFixed(2)},${calc.siTotal.toFixed(2)},`;
     csv += `${companyPension.toFixed(2)},${companyMedical.toFixed(2)},${companyUnemployment.toFixed(2)},${companyMaternity.toFixed(2)},${companyInjury.toFixed(2)},${companySiTotal.toFixed(2)},`;

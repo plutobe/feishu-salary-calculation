@@ -79,12 +79,12 @@
           <div class="rule-formula">转正日期 = 入职日期 + 试用期月数 - 1天</div>
         </div>
         <div class="rule-item">
-          <div class="rule-name">出勤比</div>
-          <div class="rule-formula">整月员工且满勤 → 1.0；其他情况 → 实际出勤天数 ÷ 21.75</div>
+          <div class="rule-name">计薪出勤</div>
+          <div class="rule-formula">Excel实际出勤天数 + 调休小时 ÷ 每日应出勤小时；调休按带薪出勤处理</div>
         </div>
         <div class="rule-item">
-          <div class="rule-name">折算月薪</div>
-          <div class="rule-formula">折算月薪 = 加权月薪 × 出勤比</div>
+          <div class="rule-name">工资基数</div>
+          <div class="rule-formula">非当月入职或当月1日入职按整月计薪；月中入职按入职日至月底的计薪日 × 日薪</div>
         </div>
         <div class="rule-item">
           <div class="rule-name">病假扣款</div>
@@ -100,11 +100,11 @@
         </div>
         <div class="rule-item">
           <div class="rule-name">事假小时</div>
-          <div class="rule-formula">事假小时 = 缺勤小时 - 病假小时 - 调休小时</div>
+          <div class="rule-formula">优先读取考勤明细中的事假时段；源表假别有误时可在员工行内修正</div>
         </div>
         <div class="rule-item">
-          <div class="rule-name">请假最小单位</div>
-          <div class="rule-formula">0.5天 <small>(按半天自动对齐，小时数 = 应出勤小时 ÷ 应出勤天数 ÷ 2)</small></div>
+          <div class="rule-name">调休计薪</div>
+          <div class="rule-formula">按审批的实际小时计为带薪出勤，不四舍五入、不扣薪</div>
         </div>
         <div class="rule-item">
           <div class="rule-name">社保个人扣款</div>
@@ -120,7 +120,7 @@
         </div>
         <div class="rule-item">
           <div class="rule-name">实发工资</div>
-          <div class="rule-formula">实发工资 = 折算月薪 - 病假扣款 - 事假扣款 - 个人社保合计</div>
+          <div class="rule-formula">实发工资 = 工资基数 - 病假扣款 - 事假扣款 - 个人社保合计</div>
         </div>
         <div class="rule-item">
           <div class="rule-name">企业用人总成本</div>
@@ -128,7 +128,7 @@
         </div>
         <div class="rule-item">
           <div class="rule-name">月中入职折算</div>
-          <div class="rule-formula">月中入职员工按实际出勤天数折算，整月员工满勤不折算</div>
+          <div class="rule-formula">当月1日入职按整月满勤；月中入职按入职日至月底的计薪日折算，法定节假日带薪，事假另扣</div>
         </div>
         <div class="rule-item">
           <div class="rule-name">试用期薪资分段</div>
