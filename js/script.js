@@ -15,6 +15,9 @@ let probationSettings = {
   months: 3     // 默认试用期月数
 };
 
+let housingFund = { unit: 12, personal: 12 };       // 公积金缴纳比例（单位/个人）
+let mealSettings = { amount: 15, overtimeHours: 2 }; // 餐补金额(元/次) & 加班满足餐补的阈值(小时)
+
 let salaryPeriod = null; // e.g. "2026年04月"
 const leaveUpdateTimers = {};
 
@@ -74,6 +77,49 @@ function extractLeaveHoursFromDaily(val, leaveName) {
 
 function extractCompHoursFromDaily(val) {
   return extractLeaveHoursFromDaily(val, '调休假');
+}
+
+/**
+ * 计算某天加班小时数（考虑弹性打卡）。
+ * 正常上班天格式 "正常(08:50),正常(21:26);加班(18:22-21:26)"：前两个 HH:MM 为上下班卡。
+ * 弹性打卡规则：加班从 max(18:00, 上班卡 + 9.5h) 起算，下班卡晚于该时刻即为加班。
+ * 休息打卡天（如周末 "休息打卡(09:39,17:23);加班(10:00-12:00,13:30-17:23)"）无弹性基准，
+ * 改用已审批 "加班(a-b)" 时段求和。
+ */
+function calcDayOvertime(val) {
+  if (!val) return 0;
+  const s = String(val);
+
+  if (s.includes('休息打卡')) {
+    // 无弹性基准，直接用已审批的加班时段
+    const match = s.match(new RegExp('加班\\(([^)]+)\\)'));
+    if (!match) return 0;
+    let total = 0;
+    for (const range of match[1].split(',')) {
+      const parts = range.split('-');
+      if (parts.length === 2) {
+        const startMin = timeToMinutes(parts[0]);
+        const endMin = timeToMinutes(parts[1]);
+        if (endMin > startMin) total += (endMin - startMin) / 60;
+      }
+    }
+    return total;
+  }
+
+  // 正常上班天：读取前两个打卡时间作为上班/下班卡
+  const times = [];
+  const re = /(\d{1,2}:\d{2})/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    times.push(m[1]);
+    if (times.length === 2) break;
+  }
+  if (times.length < 2) return 0;
+
+  const clockIn = timeToMinutes(times[0]);
+  const clockOut = timeToMinutes(times[1]);
+  const flexStart = Math.max(18 * 60, clockIn + 9.5 * 60);
+  return Math.max(0, (clockOut - flexStart) / 60);
 }
 
 function parseIsoDate(dateStr) {
@@ -160,6 +206,7 @@ function parseExcel(data) {
       const val = r[d];
       const status = parseDailyStatus(val);
       status.date = dailyDates[d - dailyColStart]; // Add date to each day
+      status.overtimeHours = calcDayOvertime(val); // 弹性打卡下当天加班小时（供餐补判定）
       daily.push(status);
       if (status.type === 'comp') {
         autoCompHours += extractCompHoursFromDaily(val);
@@ -184,6 +231,8 @@ function parseExcel(data) {
       probationMonths: 3, // default probation months
       paySocialInsurance: true,
       socialInsuranceBase: 0,
+      payHousingFund: true,
+      housingFundBase: 0,
       requiredDays: monthlyDays,
       requiredHours: monthlyHours,
       actualDays: parseFloat(r[15]) || 0,   // Col P (16), 0-indexed 15
@@ -289,6 +338,18 @@ function calcEmployee(emp) {
     siTotal = pensionDeduction + medicalDeduction + unemploymentDeduction + maternityDeduction + injuryDeduction;
   }
 
+  // 公积金个人扣款（基数默认取社保基数，其次按正式薪资）
+  let housingFundDeduction = 0;
+  if (emp.payHousingFund !== false) {
+    const hfBase = emp.housingFundBase > 0 ? emp.housingFundBase
+                 : (emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : formalSalary);
+    housingFundDeduction = hfBase * housingFund.personal / 100;
+  }
+
+  // 餐补：每天加班超过阈值(默认2h)记一次，每次补贴 mealSettings.amount(默认15元)
+  const mealDays = emp.daily.filter(d => (d.overtimeHours || 0) > mealSettings.overtimeHours).length;
+  const mealAllowance = mealDays * mealSettings.amount;
+
   // 本月入职：1 日入职按整月工资；月中入职按入职日至月底的计薪日折算。
   // 计薪日包含周一至周五及法定节假日，事假在基数之后另行扣除。
   let isNewHireThisMonth = false;
@@ -314,15 +375,16 @@ function calcEmployee(emp) {
     }
   }
 
-  // Net salary
-  const netSalary = base - personalDeduction - sickDeduction - siTotal;
+  // Net salary（公积金个人扣减、餐补加回）
+  const netSalary = base - personalDeduction - sickDeduction - siTotal - housingFundDeduction + mealAllowance;
 
   return {
     dailySalary, hourlySalary, weightedMonthlySalary, probationEndDate,
     probationDays, formalDays, probationSalary,
     personalDeduction, sickDeduction,
     pensionDeduction, medicalDeduction, unemploymentDeduction, maternityDeduction, injuryDeduction,
-    siTotal, netSalary, isNewHireThisMonth, isFirstDayHire, payableDays, base
+    siTotal, housingFundDeduction, mealAllowance, mealDays,
+    netSalary, isNewHireThisMonth, isFirstDayHire, payableDays, base
   };
 }
 
@@ -368,6 +430,8 @@ function render() {
     '<th>试用期<br><small>月薪/月数</small></th>' +
     '<th>缴纳社保</th>' +
     '<th>社保基数</th>' +
+    '<th>缴纳公积金</th>' +
+    '<th>公积金基数</th>' +
     '<th>入职日期</th>' +
     '<th>转正日期</th>' +
     '<th>应出勤<br><small>天</small></th>' +
@@ -379,6 +443,8 @@ function render() {
     '<th>事假扣款</th>' +
     '<th>病假扣款</th>' +
     '<th>社保合计</th>' +
+    '<th>公积金扣款</th>' +
+    '<th>餐补金额</th>' +
     '<th>实发工资</th>' +
     '<th>每日考勤</th>' +
     '<th>计算明细</th>' +
@@ -388,7 +454,10 @@ function render() {
   let totalPersonalDed = 0;
   let totalSickDed = 0;
   let totalSi = 0;
+  let totalHousingFund = 0;
+  let totalMeal = 0;
   let totalCompanySi = 0;
+  let totalCompanyHousingFund = 0;
   let totalNet = 0;
   let totalEmployees = employees.length;
 
@@ -400,12 +469,16 @@ function render() {
     totalPersonalDed += calc.personalDeduction;
     totalSickDed += calc.sickDeduction;
     totalSi += calc.siTotal;
+    totalHousingFund += calc.housingFundDeduction;
+    totalMeal += calc.mealAllowance;
     totalNet += calc.netSalary;
 
     // Calculate company contribution
     const si = socialInsurance;
     const companySi = emp.monthlySalary * (si.pension.unit + si.medical.unit + si.unemployment.unit + si.maternity.unit + si.injury.unit) / 100;
     totalCompanySi += companySi;
+    // 单位公积金（按正式月薪 × 单位比例）
+    totalCompanyHousingFund += emp.monthlySalary * housingFund.unit / 100;
 
     // Daily calendar — 7-column grid: 日 一 二 三 四 五 六
     const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六'];
@@ -444,6 +517,7 @@ function render() {
     const isProbation = calc.probationDays > 0 && calc.formalDays === 0;
     const isFormal = calc.probationDays === 0;
     const isTransition = calc.probationDays > 0 && calc.formalDays > 0;
+    const calHfBase = emp.housingFundBase > 0 ? emp.housingFundBase : (emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : calc.weightedMonthlySalary);
 
     const probationDisabled = isFormal ? 'disabled' : '';
     html += `<tr>
@@ -462,6 +536,12 @@ function render() {
       </td>
       <td>
         <input type="number" class="salary-input" value="${emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : emp.monthlySalary}" min="0" step="100" style="width:90px" onchange="updateSocialInsuranceBase(${idx}, this.value)">
+      </td>
+      <td class="stat-value" style="text-align:center">
+        <input type="checkbox" ${emp.payHousingFund !== false ? 'checked' : ''} onchange="updatePayHousingFund(${idx}, this.checked)">
+      </td>
+      <td>
+        <input type="number" class="salary-input" value="${emp.housingFundBase > 0 ? emp.housingFundBase : (emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : emp.monthlySalary)}" min="0" step="100" style="width:90px" onchange="updateHousingFundBase(${idx}, this.value)">
       </td>
       <td class="stat-value" style="font-size:12px">${hireDateStr}</td>
       <td class="stat-value" style="font-size:12px">
@@ -485,6 +565,8 @@ function render() {
       <td class="stat-negative stat-money">${fmtMoney(calc.personalDeduction)}</td>
       <td class="stat-negative stat-money">${fmtMoney(calc.sickDeduction)}</td>
       <td class="stat-negative stat-money" style="font-weight:700">${fmtMoney(calc.siTotal)}</td>
+      <td class="stat-negative stat-money">${fmtMoney(calc.housingFundDeduction)}</td>
+      <td class="stat-money" style="color:var(--success)">${fmtMoney(calc.mealAllowance)}</td>
       <td class="stat-final">${fmtMoney(calc.netSalary)}</td>
       <td>${dailyHtml}</td>
       <td style="font-size:11px;line-height:1.5;white-space:normal;min-width:200px;color:var(--text-light)">
@@ -498,7 +580,9 @@ function render() {
         ${emp.personalHours > 0 ? `<div>事假扣 = ${emp.personalHours}h × ${fmtMoney(calc.hourlySalary)} = <strong>${fmtMoney(calc.personalDeduction)}</strong></div>` : ''}
         ${emp.sickHours > 0 ? `<div>病假扣 = ${emp.sickHours}h × ${fmtMoney(calc.hourlySalary)} × 30% = <strong>${fmtMoney(calc.sickDeduction)}</strong></div>` : ''}
         <div>社保扣 = <strong>${emp.paySocialInsurance !== false ? fmtMoney(calc.siTotal) : '¥0.00'}</strong> <small>(${emp.paySocialInsurance !== false ? (emp.socialInsuranceBase > 0 ? '基数' + fmtMoney(emp.socialInsuranceBase) : '按正式薪资') : '不缴纳'})</small></div>
-        <div style="color:var(--primary);font-weight:600;margin-top:2px">实发 = ${fmtMoney(calc.base)}${emp.personalHours > 0 ? ` − ${fmtMoney(calc.personalDeduction)}` : ''}${emp.sickHours > 0 ? ` − ${fmtMoney(calc.sickDeduction)}` : ''} − ${fmtMoney(calc.siTotal)} = ${fmtMoney(calc.netSalary)}</div>
+        <div>公积金扣 = <strong>${emp.payHousingFund !== false ? fmtMoney(calc.housingFundDeduction) : '¥0.00'}</strong> <small>(${emp.payHousingFund !== false ? (calHfBase > 0 ? '基数' + fmtMoney(calHfBase) : '按社保基数') : '不缴纳'})</small></div>
+        ${calc.mealDays > 0 ? `<div>餐补 = ${calc.mealDays}天 × ${fmtMoney(mealSettings.amount)} = <strong>+${fmtMoney(calc.mealAllowance)}</strong></div>` : ''}
+        <div style="color:var(--primary);font-weight:600;margin-top:2px">实发 = ${fmtMoney(calc.base)}${emp.personalHours > 0 ? ` − ${fmtMoney(calc.personalDeduction)}` : ''}${emp.sickHours > 0 ? ` − ${fmtMoney(calc.sickDeduction)}` : ''} − ${fmtMoney(calc.siTotal)}${emp.payHousingFund !== false ? ` − ${fmtMoney(calc.housingFundDeduction)}` : ''}${calc.mealDays > 0 ? ` + ${fmtMoney(calc.mealAllowance)}` : ''} = ${fmtMoney(calc.netSalary)}</div>
       </td>
     </tr>`;
   });
@@ -509,15 +593,18 @@ function render() {
   // Summary
   const avgSalary = totalEmployees > 0 ? totalSalary / totalEmployees : 0;
   const avgNet = totalEmployees > 0 ? totalNet / totalEmployees : 0;
-  const totalCost = totalNet + totalCompanySi;
+  const totalCost = totalNet + totalCompanySi + totalCompanyHousingFund;
   document.getElementById('summaryGrid').innerHTML = `
     <div class="summary-card"><div class="label">员工总数</div><div class="value">${totalEmployees}</div></div>
     <div class="summary-card"><div class="label">应发工资总额</div><div class="value primary">${fmtMoney(totalSalary)}</div></div>
     <div class="summary-card"><div class="label">事假扣款总额</div><div class="value danger">${fmtMoney(totalPersonalDed)}</div></div>
     <div class="summary-card"><div class="label">病假扣款总额</div><div class="value danger">${fmtMoney(totalSickDed)}</div></div>
     <div class="summary-card"><div class="label">个人社保总额</div><div class="value danger">${fmtMoney(totalSi)}</div></div>
+    <div class="summary-card"><div class="label">个人公积金总额</div><div class="value danger">${fmtMoney(totalHousingFund)}</div></div>
+    <div class="summary-card"><div class="label">餐补总额</div><div class="value success">${fmtMoney(totalMeal)}</div></div>
     <div class="summary-card"><div class="label">实发工资总额</div><div class="value success">${fmtMoney(totalNet)}</div></div>
     <div class="summary-card"><div class="label">单位社保总额</div><div class="value" style="color:#e67e22">${fmtMoney(totalCompanySi)}</div></div>
+    <div class="summary-card"><div class="label">单位公积金总额</div><div class="value" style="color:#e67e22">${fmtMoney(totalCompanyHousingFund)}</div></div>
     <div class="summary-card"><div class="label">企业用人总成本</div><div class="value" style="color:#8e44ad;font-size:20px">${fmtMoney(totalCost)}</div></div>
     <div class="summary-card"><div class="label">平均月薪</div><div class="value">${fmtMoney(avgSalary)}</div></div>
   `;
@@ -576,6 +663,10 @@ function openSettings() {
   document.querySelector('[onchange="updateRate(\'injury\',\'personal\',this.value)"]').value = socialInsurance.injury.personal;
   document.querySelector('[onchange="updateProbationDiscount(this.value)"]').value = probationSettings.discount;
   document.querySelector('[onchange="updateProbationMonths(this.value)"]').value = probationSettings.months;
+  document.querySelector('[onchange="updateHousingFundRate(\'unit\',this.value)"]').value = housingFund.unit;
+  document.querySelector('[onchange="updateHousingFundRate(\'personal\',this.value)"]').value = housingFund.personal;
+  document.querySelector('[onchange="updateMealAmount(this.value)"]').value = mealSettings.amount;
+  document.querySelector('[onchange="updateMealOvertimeThreshold(this.value)"]').value = mealSettings.overtimeHours;
   document.getElementById('settingsModal').classList.add('active');
 }
 
@@ -631,6 +722,25 @@ function updateProbationMonths(val) {
   render();
 }
 
+function updateHousingFundRate(field, val) {
+  const v = parseFloat(val) || 0;
+  housingFund[field] = v;
+  saveSettings();
+  render();
+}
+
+function updateMealAmount(val) {
+  mealSettings.amount = parseFloat(val) || 0;
+  saveSettings();
+  render();
+}
+
+function updateMealOvertimeThreshold(val) {
+  mealSettings.overtimeHours = parseFloat(val) || 2;
+  saveSettings();
+  render();
+}
+
 function updateEmployeeProbationSalary(idx, val) {
   if (idx >= 0 && idx < employees.length) {
     employees[idx].probationSalary = parseFloat(val) || 0;
@@ -664,6 +774,22 @@ function updateSocialInsuranceBase(idx, val) {
   }
 }
 
+function updatePayHousingFund(idx, checked) {
+  if (idx >= 0 && idx < employees.length) {
+    employees[idx].payHousingFund = checked;
+    saveEmployeeCache(employees[idx]);
+    render();
+  }
+}
+
+function updateHousingFundBase(idx, val) {
+  if (idx >= 0 && idx < employees.length) {
+    employees[idx].housingFundBase = parseFloat(val) || 0;
+    saveEmployeeCache(employees[idx]);
+    render();
+  }
+}
+
 // ======= Cache =======
 const CACHE_KEY = 'salaryCalc Employees';
 const EMPLOYEES_CACHE_KEY = 'salaryCalc AllEmployees';
@@ -691,6 +817,8 @@ function loadEmployeeCache(employees) {
         if (saved.probationMonths != null) emp.probationMonths = saved.probationMonths;
         if (saved.paySocialInsurance != null) emp.paySocialInsurance = saved.paySocialInsurance;
         if (saved.socialInsuranceBase != null) emp.socialInsuranceBase = saved.socialInsuranceBase;
+        if (saved.payHousingFund != null) emp.payHousingFund = saved.payHousingFund;
+        if (saved.housingFundBase != null) emp.housingFundBase = saved.housingFundBase;
       }
     });
   } catch (e) {
@@ -709,6 +837,8 @@ function saveEmployeeCache(emp) {
       probationMonths: emp.probationMonths,
       paySocialInsurance: emp.paySocialInsurance,
       socialInsuranceBase: emp.socialInsuranceBase,
+      payHousingFund: emp.payHousingFund,
+      housingFundBase: emp.housingFundBase,
     };
     localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
   } catch (e) {
@@ -756,7 +886,7 @@ function loadEmployeesFromCache() {
 // ======= Utilities =======
 function saveSettings() {
   try {
-    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ socialInsurance, probationSettings }));
+    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ socialInsurance, probationSettings, housingFund, mealSettings }));
   } catch (e) {
     console.warn('Failed to save settings:', e);
   }
@@ -769,6 +899,8 @@ function loadSettings() {
     const saved = JSON.parse(raw);
     if (saved.socialInsurance) socialInsurance = saved.socialInsurance;
     if (saved.probationSettings) probationSettings = saved.probationSettings;
+    if (saved.housingFund) housingFund = saved.housingFund;
+    if (saved.mealSettings) mealSettings = saved.mealSettings;
   } catch (e) {
     console.warn('Failed to load settings:', e);
   }
@@ -875,10 +1007,10 @@ function exportCSV() {
 
   // Calculate company contribution totals
   const si = socialInsurance;
-  let csv = '﻿姓名,工号,部门,入职日期,转正日期,正式月薪,试用期月薪,试用期月数,是否缴纳社保,社保基数,应出勤天数,计薪出勤天数(含调休),扣薪缺勤小时,病假小时,事假小时,调休假小时,事假扣款,病假扣款,';
+  let csv = '﻿姓名,工号,部门,入职日期,转正日期,正式月薪,试用期月薪,试用期月数,是否缴纳社保,社保基数,缴纳公积金,公积金基数,应出勤天数,计薪出勤天数(含调休),扣薪缺勤小时,病假小时,事假小时,调休假小时,事假扣款,病假扣款,';
   csv += `个人养老(${si.pension.personal}%),个人医疗(${si.medical.personal}%),个人失业(${si.unemployment.personal}%),个人生育(${si.maternity.personal}%),个人工伤(${si.injury.personal}%),个人社保合计,`;
   csv += `单位养老(${si.pension.unit}%),单位医疗(${si.medical.unit}%),单位失业(${si.unemployment.unit}%),单位生育(${si.maternity.unit}%),单位工伤(${si.injury.unit}%),单位社保合计,`;
-  csv += '实发工资,单位社保总额,企业用人总成本\n';
+  csv += `个人公积金(${housingFund.personal}%),单位公积金(${housingFund.unit}%),餐补金额,实发工资,单位社保总额,单位公积金总额,企业用人总成本\n`;
 
   employees.forEach(emp => {
     const calc = calcEmployee(emp);
@@ -896,16 +1028,19 @@ function exportCSV() {
     const companyInjury = formalSalary * si.injury.unit / 100;
     const companySiTotal = companyPension + companyMedical + companyUnemployment + companyMaternity + companyInjury;
 
-    const totalCost = calc.netSalary + companySiTotal;
+    const companyHousingFund = formalSalary * housingFund.unit / 100;
+    const totalCost = calc.netSalary + companySiTotal + companyHousingFund;
 
-    csv += `${emp.name},${emp.employeeId},${emp.dept},${hireDateStr},${probationEndDateStr},${formalSalary},${probationSalary},${probationMonths},${emp.paySocialInsurance !== false ? '是' : '否'},${emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : formalSalary},`;
+    const hfBase = emp.housingFundBase > 0 ? emp.housingFundBase : (emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : formalSalary);
+
+    csv += `${emp.name},${emp.employeeId},${emp.dept},${hireDateStr},${probationEndDateStr},${formalSalary},${probationSalary},${probationMonths},${emp.paySocialInsurance !== false ? '是' : '否'},${emp.socialInsuranceBase > 0 ? emp.socialInsuranceBase : formalSalary},${emp.payHousingFund !== false ? '是' : '否'},${hfBase},`;
     const paidAttendanceDays = calcPaidAttendanceDays(emp);
     const deductibleAbsenceHours = calcDeductibleAbsenceHours(emp);
     csv += `${emp.requiredDays},${Number(paidAttendanceDays.toFixed(3))},${deductibleAbsenceHours.toFixed(1)},${emp.sickHours},${emp.personalHours},${emp.compHours},`;
     csv += `${calc.personalDeduction.toFixed(2)},${calc.sickDeduction.toFixed(2)},`;
     csv += `${calc.pensionDeduction.toFixed(2)},${calc.medicalDeduction.toFixed(2)},${calc.unemploymentDeduction.toFixed(2)},${calc.maternityDeduction.toFixed(2)},${calc.injuryDeduction.toFixed(2)},${calc.siTotal.toFixed(2)},`;
     csv += `${companyPension.toFixed(2)},${companyMedical.toFixed(2)},${companyUnemployment.toFixed(2)},${companyMaternity.toFixed(2)},${companyInjury.toFixed(2)},${companySiTotal.toFixed(2)},`;
-    csv += `${calc.netSalary.toFixed(2)},${companySiTotal.toFixed(2)},${totalCost.toFixed(2)}\n`;
+    csv += `${calc.housingFundDeduction.toFixed(2)},${companyHousingFund.toFixed(2)},${calc.mealAllowance.toFixed(2)},${calc.netSalary.toFixed(2)},${companySiTotal.toFixed(2)},${companyHousingFund.toFixed(2)},${totalCost.toFixed(2)}\n`;
   });
 
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
