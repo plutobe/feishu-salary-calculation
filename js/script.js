@@ -81,17 +81,21 @@ function extractCompHoursFromDaily(val) {
 
 /**
  * 计算某天加班小时数（考虑弹性打卡）。
- * 正常上班天格式 "正常(08:50),正常(21:26);加班(18:22-21:26)"：前两个 HH:MM 为上下班卡。
- * 弹性打卡规则：加班从 max(18:00, 上班卡 + 9.5h) 起算，下班卡晚于该时刻即为加班。
- * 休息打卡天（如周末 "休息打卡(09:39,17:23);加班(10:00-12:00,13:30-17:23)"）无弹性基准，
- * 改用已审批 "加班(a-b)" 时段求和。
+ * 前置条件：当日必须有已审批的加班参数 "加班(a-b)" 才判定加班；仅晚打卡、无审批加班参数不算。
+ * 有加班参数时：
+ *  - 正常上班天（"正常(08:50),正常(21:26);加班(18:22-21:26)"）：前两个 HH:MM 为上下班卡，
+ *    按弹性打卡从 max(18:00, 上班卡 + 9.5h) 起算，下班卡晚于该时刻即为加班。
+ *  - 休息打卡天（周末/休假，如 "休息打卡(09:39,17:23);加班(10:00-12:00,13:30-17:23)"）无弹性基准，
+ *    改用已审批 "加班(a-b)" 时段求和。
  */
 function calcDayOvertime(val) {
   if (!val) return 0;
   const s = String(val);
+  const hasApproved = s.includes('加班(');
+  if (!hasApproved) return 0;
 
+  // 休息打卡天（周末/休假）无弹性基准：直接累计已审批加班时段
   if (s.includes('休息打卡')) {
-    // 无弹性基准，直接用已审批的加班时段
     const match = s.match(new RegExp('加班\\(([^)]+)\\)'));
     if (!match) return 0;
     let total = 0;
@@ -106,7 +110,7 @@ function calcDayOvertime(val) {
     return total;
   }
 
-  // 正常上班天：读取前两个打卡时间作为上班/下班卡
+  // 正常上班天（已有审批加班参数）：按弹性打卡从上下班卡推导
   const times = [];
   const re = /(\d{1,2}:\d{2})/g;
   let m;
@@ -115,7 +119,6 @@ function calcDayOvertime(val) {
     if (times.length === 2) break;
   }
   if (times.length < 2) return 0;
-
   const clockIn = timeToMinutes(times[0]);
   const clockOut = timeToMinutes(times[1]);
   const flexStart = Math.max(18 * 60, clockIn + 9.5 * 60);
@@ -207,6 +210,18 @@ function parseExcel(data) {
       const status = parseDailyStatus(val);
       status.date = dailyDates[d - dailyColStart]; // Add date to each day
       status.overtimeHours = calcDayOvertime(val); // 弹性打卡下当天加班小时（供餐补判定）
+      // 休息打卡天：额外记录上班卡到下班卡的总时长（供餐补满9.5h判定）
+      const sVal = val ? String(val) : '';
+      if (sVal.includes('休息打卡')) {
+        status.isRestDay = true;
+        const rm = sVal.match(/休息打卡\(([^)]+)\)/);
+        if (rm) {
+          const times = rm[1].split(',').map(t => t.trim());
+          if (times.length >= 2) {
+            status.restCardHours = Math.max(0, (timeToMinutes(times[1]) - timeToMinutes(times[0])) / 60);
+          }
+        }
+      }
       daily.push(status);
       if (status.type === 'comp') {
         autoCompHours += extractCompHoursFromDaily(val);
@@ -346,8 +361,13 @@ function calcEmployee(emp) {
     housingFundDeduction = hfBase * housingFund.personal / 100;
   }
 
-  // 餐补：每天加班超过阈值(默认2h)记一次，每次补贴 mealSettings.amount(默认15元)
-  const mealDays = emp.daily.filter(d => (d.overtimeHours || 0) > mealSettings.overtimeHours).length;
+  // 餐补：休息打卡天上下班卡满9.5h 直接算一次；正常上班天加班超过阈值(默认2h)记一次。
+  // 每次补贴 mealSettings.amount(默认15元)。
+  const mealDays = emp.daily.filter(d =>
+    d.isRestDay
+      ? (d.restCardHours || 0) >= 9.5
+      : (d.overtimeHours || 0) > mealSettings.overtimeHours
+  ).length;
   const mealAllowance = mealDays * mealSettings.amount;
 
   // 本月入职：1 日入职按整月工资；月中入职按入职日至月底的计薪日折算。
