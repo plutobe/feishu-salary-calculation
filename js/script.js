@@ -231,7 +231,7 @@ function parseExcel(data) {
       probationMonths: 3, // default probation months
       paySocialInsurance: true,
       socialInsuranceBase: 0,
-      payHousingFund: true,
+      payHousingFund: false,
       housingFundBase: 0,
       requiredDays: monthlyDays,
       requiredHours: monthlyHours,
