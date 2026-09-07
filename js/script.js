@@ -154,6 +154,20 @@ function timeToMinutes(t) {
   return h * 60 + m;
 }
 
+function extractDailyColumns(headerRow) {
+  let start = -1, end = -1;
+  for (let i = 0; i < headerRow.length; i++) {
+    const header = String(headerRow[i] || '');
+    if (/\d{4}-\d{2}-\d{2}/.test(header)) {
+      if (start === -1) start = i;
+      end = i;
+    }
+  }
+  return (start === -1)
+    ? null
+    : { start, end };
+}
+
 function parseExcel(data) {
   const wb = XLSX.read(data, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -162,11 +176,11 @@ function parseExcel(data) {
   // Row 1: category headers, Row 2: column headers, Row 3+: data
   const dataRows = rows.slice(2).filter(r => r[0] && String(r[0]).trim());
 
-  const dailyColStart = 46; // 0-indexed, column AU = 46
-  const dailyColEnd = 75;   // 0-indexed, column BX = 75
-
   // Parse daily dates from header row (row 1, index 0)
   const headerRow = rows[1];
+  const dailyCols = extractDailyColumns(headerRow);
+  const dailyColStart = dailyCols ? dailyCols.start : 0;
+  const dailyColEnd = dailyCols ? dailyCols.end : -1;
   const dailyDates = [];
   for (let d = dailyColStart; d <= dailyColEnd; d++) {
     const header = String(headerRow[d] || '');
@@ -526,7 +540,9 @@ function render() {
       else if (d.type === 'absent') cls += 'absent';
       else if (d.type === 'comp') cls += 'comp';
       else cls += 'none';
-      dailyHtml += `<div class="${cls}" title="${di+1}日: ${d.title}">${di+1}</div>`;
+      // 显示真实日期号（来自表头日期），无日期时回退为序号
+      const dayNum = d.date ? Number(d.date.split('-')[2]) : di + 1;
+      dailyHtml += `<div class="${cls}" title="${dayNum}日: ${d.title}">${dayNum}</div>`;
     }
     dailyHtml += '</div>';
 

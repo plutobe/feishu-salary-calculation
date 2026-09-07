@@ -6,6 +6,7 @@ const source = fs.readFileSync(new URL('../js/script.js', import.meta.url), 'utf
 const calculationSource = source.split('// ======= Render =======')[0] + `
 globalThis.salaryRules = {
   extractLeaveHoursFromDaily,
+  extractDailyColumns,
   countPayableDays,
   calcPaidAttendanceDays,
   calcDeductibleAbsenceHours,
@@ -22,6 +23,32 @@ const juneDates = Array.from({ length: 30 }, (_, index) => ({
 
 assert.equal(rules.extractLeaveHoursFromDaily('调休假(13:30-18:00)', '调休假'), 4.5);
 assert.equal(rules.extractLeaveHoursFromDaily('调休假(08:30-12:00,13:30-18:00)', '调休假'), 8);
+
+// 每日考勤日期列按表头 YYYY-MM-DD 动态检测，不再硬编码 46-75
+function headerRowWithDates(startCol, dayCount, month = '04') {
+  const row = new Array(80).fill('');
+  for (let i = 0; i < dayCount; i++) {
+    const day = String(i + 1).padStart(2, '0');
+    row[startCol + i] = `2026-${month}-${day} 星期${'一二三四五六日'[(i + 1) % 7]}`;
+  }
+  return row;
+}
+function assertDailyCols(headerRow, start, end) {
+  const cols = rules.extractDailyColumns(headerRow);
+  assert.equal(cols.start, start, `expected start=${start}`);
+  assert.equal(cols.end, end, `expected end=${end}`);
+}
+// 4月30天：46..75
+assertDailyCols(headerRowWithDates(46, 30), 46, 75);
+// 5月31天：46..76
+assertDailyCols(headerRowWithDates(46, 31, '05'), 46, 76);
+// 2月28天：46..73
+assertDailyCols(headerRowWithDates(46, 28, '02'), 46, 73);
+// 起始列不在46时也能正确识别
+assertDailyCols(headerRowWithDates(40, 30), 40, 69);
+// 无日期列时返回 null
+assert.equal(rules.extractDailyColumns(new Array(80).fill('')), null);
+
 assert.equal(rules.countPayableDays('2026-06-15', '2026-06-30'), 12);
 assert.equal(rules.countPayableDays('2026-05-02', '2026-05-03'), 1);
 
