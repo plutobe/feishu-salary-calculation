@@ -95,6 +95,10 @@
           <div class="rule-formula">不扣款，全薪发放</div>
         </div>
         <div class="rule-item">
+          <div class="rule-name">缺卡扣薪</div>
+          <div class="rule-formula">有缺卡时按实际出勤缺口扣薪，单边缺卡通常为 0.5 天</div>
+        </div>
+        <div class="rule-item">
           <div class="rule-name">事假扣款</div>
           <div class="rule-formula">事假扣款 = 事假小时 × 时薪 <small>(无薪)</small></div>
         </div>
@@ -224,7 +228,7 @@
           <div class="rule-item">
             <div class="rule-name">加班餐补</div>
             <div class="rule-formula">
-              单日加班超过 <input type="number" class="rate-input" value="2" min="0" step="0.5" onchange="updateMealOvertimeThreshold(this.value)"> 小时，补贴
+              单日已审批加班超过 <input type="number" class="rate-input" value="2" min="0" step="0.5" onchange="updateMealOvertimeThreshold(this.value)"> 小时，补贴
               <input type="number" class="rate-input" value="15" min="0" step="1" onchange="updateMealAmount(this.value)"> 元/天
             </div>
           </div>
@@ -253,7 +257,7 @@
   </div>
 </div>
 
-<script src="js/script.js?v=2"></script>
+<script src="js/script.js?v=3"></script>
 
 </body>
 </html>

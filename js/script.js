@@ -79,50 +79,9 @@ function extractCompHoursFromDaily(val) {
   return extractLeaveHoursFromDaily(val, '调休假');
 }
 
-/**
- * 计算某天加班小时数（考虑弹性打卡）。
- * 前置条件：当日必须有已审批的加班参数 "加班(a-b)" 才判定加班；仅晚打卡、无审批加班参数不算。
- * 有加班参数时：
- *  - 正常上班天（"正常(08:50),正常(21:26);加班(18:22-21:26)"）：前两个 HH:MM 为上下班卡，
- *    按弹性打卡从 max(18:00, 上班卡 + 9.5h) 起算，下班卡晚于该时刻即为加班。
- *  - 休息打卡天（周末/休假，如 "休息打卡(09:39,17:23);加班(10:00-12:00,13:30-17:23)"）无弹性基准，
- *    改用已审批 "加班(a-b)" 时段求和。
- */
+/** 计算某天可计餐补的加班时长，以已审批的 "加班(a-b)" 时段为准。 */
 function calcDayOvertime(val) {
-  if (!val) return 0;
-  const s = String(val);
-  const hasApproved = s.includes('加班(');
-  if (!hasApproved) return 0;
-
-  // 休息打卡天（周末/休假）无弹性基准：直接累计已审批加班时段
-  if (s.includes('休息打卡')) {
-    const match = s.match(new RegExp('加班\\(([^)]+)\\)'));
-    if (!match) return 0;
-    let total = 0;
-    for (const range of match[1].split(',')) {
-      const parts = range.split('-');
-      if (parts.length === 2) {
-        const startMin = timeToMinutes(parts[0]);
-        const endMin = timeToMinutes(parts[1]);
-        if (endMin > startMin) total += (endMin - startMin) / 60;
-      }
-    }
-    return total;
-  }
-
-  // 正常上班天（已有审批加班参数）：按弹性打卡从上下班卡推导
-  const times = [];
-  const re = /(\d{1,2}:\d{2})/g;
-  let m;
-  while ((m = re.exec(s)) !== null) {
-    times.push(m[1]);
-    if (times.length === 2) break;
-  }
-  if (times.length < 2) return 0;
-  const clockIn = timeToMinutes(times[0]);
-  const clockOut = timeToMinutes(times[1]);
-  const flexStart = Math.max(18 * 60, clockIn + 9.5 * 60);
-  return Math.max(0, (clockOut - flexStart) / 60);
+  return extractLeaveHoursFromDaily(val, '加班');
 }
 
 function parseIsoDate(dateStr) {
@@ -200,6 +159,7 @@ function parseExcel(data) {
     const absenceHours = parseFloat(r[30]) || 0; // Col AF (31), 0-indexed 30
     const monthlyDays = parseFloat(r[13]) || 0;   // Col N (14), 0-indexed 13
     const monthlyHours = parseFloat(r[14]) || 0;  // Col O (15), 0-indexed 14
+    const actualDays = parseFloat(r[15]) || 0;    // Col P (16), 0-indexed 15
 
     // Parse hire date from Col 10
     const hireDateRaw = r[10];
@@ -219,13 +179,15 @@ function parseExcel(data) {
     let autoCompHours = 0;
     let autoPersonalHours = 0;
     let autoSickHours = 0;
+    let hasMissingPunch = false;
     for (let d = dailyColStart; d <= dailyColEnd; d++) {
       const val = r[d];
       const status = parseDailyStatus(val);
       status.date = dailyDates[d - dailyColStart]; // Add date to each day
-      status.overtimeHours = calcDayOvertime(val); // 弹性打卡下当天加班小时（供餐补判定）
+      status.overtimeHours = calcDayOvertime(val); // 已审批加班小时（供餐补判定）
       // 休息打卡天：额外记录上班卡到下班卡的总时长（供餐补满9.5h判定）
       const sVal = val ? String(val) : '';
+      if (sVal.includes('缺卡')) hasMissingPunch = true;
       if (sVal.includes('休息打卡')) {
         status.isRestDay = true;
         const rm = sVal.match(/休息打卡\(([^)]+)\)/);
@@ -248,7 +210,18 @@ function parseExcel(data) {
     // 源表假别录入错误；剩余未标明假别的缺勤默认计入事假。
     const classifiedHours = autoCompHours + autoPersonalHours + autoSickHours;
     const unclassifiedHours = Math.max(0, absenceHours - classifiedHours);
-    const personalHours = autoPersonalHours + unclassifiedHours;
+    let personalHours = autoPersonalHours + unclassifiedHours;
+    if (hasMissingPunch) {
+      // 飞书源表会把单次缺卡记为缺勤 8h，但实际出勤只少 0.5 天。
+      // 用实际出勤缺口兜底，避免缺一次卡扣掉整日工资。
+      const shortfallHours = calcAttendanceShortfallHours({
+        requiredDays: monthlyDays,
+        requiredHours: monthlyHours,
+        actualDays,
+        compHours: autoCompHours,
+      });
+      personalHours = Math.min(personalHours, Math.max(0, shortfallHours - autoSickHours));
+    }
 
     return {
       id: idx,
@@ -264,7 +237,7 @@ function parseExcel(data) {
       housingFundBase: 0,
       requiredDays: monthlyDays,
       requiredHours: monthlyHours,
-      actualDays: parseFloat(r[15]) || 0,   // Col P (16), 0-indexed 15
+      actualDays: actualDays,
       actualHours: parseFloat(r[18]) || 0,  // Col S (19), 0-indexed 18
       absenceHours: absenceHours,
       overtimeHours: parseFloat(r[34]) || 0, // Col AJ (35), 0-indexed 34
@@ -281,6 +254,12 @@ function calcPaidAttendanceDays(emp) {
   const hoursPerDay = emp.requiredDays > 0 ? emp.requiredHours / emp.requiredDays : 8;
   if (hoursPerDay <= 0) return emp.actualDays;
   return Math.min(emp.requiredDays, emp.actualDays + emp.compHours / hoursPerDay);
+}
+
+function calcAttendanceShortfallHours(emp) {
+  const hoursPerDay = emp.requiredDays > 0 ? emp.requiredHours / emp.requiredDays : 8;
+  if (hoursPerDay <= 0) return 0;
+  return Math.max(0, (emp.requiredDays - calcPaidAttendanceDays(emp)) * hoursPerDay);
 }
 
 function calcDeductibleAbsenceHours(emp) {
@@ -833,7 +812,7 @@ const FILENAME_CACHE_KEY = 'salaryCalc FileName';
 const SALARY_PERIOD_CACHE_KEY = 'salaryCalc SalaryPeriod';
 const SETTINGS_CACHE_KEY = 'salaryCalc Settings';
 const DATA_SCHEMA_VERSION_KEY = 'salaryCalc DataSchemaVersion';
-const DATA_SCHEMA_VERSION = '2';
+const DATA_SCHEMA_VERSION = '3';
 
 function getCacheKey(emp) {
   return `${emp.name}|${emp.employeeId}`;
