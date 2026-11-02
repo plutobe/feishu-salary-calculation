@@ -6,6 +6,7 @@ const source = fs.readFileSync(new URL('../js/script.js', import.meta.url), 'utf
 const calculationSource = source.split('// ======= Render =======')[0] + `
 globalThis.salaryRules = {
   extractLeaveHoursFromDaily,
+  extractParentalLeaveHoursFromDaily,
   extractDailyColumns,
   countPayableDays,
   calcPaidAttendanceDays,
@@ -24,6 +25,8 @@ const juneDates = Array.from({ length: 30 }, (_, index) => ({
 
 assert.equal(rules.extractLeaveHoursFromDaily('调休假(13:30-18:00)', '调休假'), 4.5);
 assert.equal(rules.extractLeaveHoursFromDaily('调休假(08:30-12:00,13:30-18:00)', '调休假'), 8);
+assert.equal(rules.extractParentalLeaveHoursFromDaily('请假(-),请假(-);育儿假(全天)', 8), 8);
+assert.equal(rules.extractParentalLeaveHoursFromDaily('育儿假(08:30-12:00)', 8), 3.5);
 
 // 每日考勤日期列按表头 YYYY-MM-DD 动态检测，不再硬编码 46-75
 function headerRowWithDates(startCol, dayCount, month = '04') {
@@ -71,6 +74,13 @@ assert.equal(rules.calcPaidAttendanceDays({
   actualDays: 20.625,
   compHours: 3,
 }), 21);
+assert.equal(rules.calcPaidAttendanceDays({
+  requiredDays: 22,
+  requiredHours: 176,
+  actualDays: 19,
+  compHours: 8,
+  parentalLeaveHours: 16,
+}), 22);
 
 assert.equal(rules.calcDeductibleAbsenceHours({ sickHours: 0, personalHours: 1 }), 1);
 

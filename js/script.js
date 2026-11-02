@@ -79,6 +79,14 @@ function extractCompHoursFromDaily(val) {
   return extractLeaveHoursFromDaily(val, '调休假');
 }
 
+function extractParentalLeaveHoursFromDaily(val, hoursPerDay = 8) {
+  if (!val) return 0;
+  const match = String(val).match(/育儿假\(([^)]+)\)/);
+  if (!match) return 0;
+  if (match[1].includes('全天')) return hoursPerDay;
+  return extractLeaveHoursFromDaily(val, '育儿假');
+}
+
 /** 计算某天可计餐补的加班时长，以已审批的 "加班(a-b)" 时段为准。 */
 function calcDayOvertime(val) {
   return extractLeaveHoursFromDaily(val, '加班');
@@ -177,9 +185,11 @@ function parseExcel(data) {
     // Build daily attendance with dates
     const daily = [];
     let autoCompHours = 0;
+    let autoParentalLeaveHours = 0;
     let autoPersonalHours = 0;
     let autoSickHours = 0;
     let hasMissingPunch = false;
+    const hoursPerDay = monthlyDays > 0 && monthlyHours > 0 ? monthlyHours / monthlyDays : 8;
     for (let d = dailyColStart; d <= dailyColEnd; d++) {
       const val = r[d];
       const status = parseDailyStatus(val);
@@ -204,11 +214,12 @@ function parseExcel(data) {
       }
       autoPersonalHours += extractLeaveHoursFromDaily(val, '事假');
       autoSickHours += extractLeaveHoursFromDaily(val, '病假');
+      autoParentalLeaveHours += extractParentalLeaveHoursFromDaily(val, hoursPerDay);
     }
 
     // 调休按实际审批小时带薪，不按半天四舍五入。假别可在页面中修正，以处理
     // 源表假别录入错误；剩余未标明假别的缺勤默认计入事假。
-    const classifiedHours = autoCompHours + autoPersonalHours + autoSickHours;
+    const classifiedHours = autoCompHours + autoParentalLeaveHours + autoPersonalHours + autoSickHours;
     const unclassifiedHours = Math.max(0, absenceHours - classifiedHours);
     let personalHours = autoPersonalHours + unclassifiedHours;
     if (hasMissingPunch) {
@@ -244,6 +255,7 @@ function parseExcel(data) {
       // editable
       sickHours: autoSickHours,
       compHours: autoCompHours,
+      parentalLeaveHours: autoParentalLeaveHours,
       personalHours: personalHours,
       daily: daily,
     };
@@ -253,7 +265,8 @@ function parseExcel(data) {
 function calcPaidAttendanceDays(emp) {
   const hoursPerDay = emp.requiredDays > 0 ? emp.requiredHours / emp.requiredDays : 8;
   if (hoursPerDay <= 0) return emp.actualDays;
-  return Math.min(emp.requiredDays, emp.actualDays + emp.compHours / hoursPerDay);
+  const paidLeaveHours = emp.compHours + (emp.parentalLeaveHours || 0);
+  return Math.min(emp.requiredDays, emp.actualDays + paidLeaveHours / hoursPerDay);
 }
 
 function calcAttendanceShortfallHours(emp) {
@@ -812,7 +825,7 @@ const FILENAME_CACHE_KEY = 'salaryCalc FileName';
 const SALARY_PERIOD_CACHE_KEY = 'salaryCalc SalaryPeriod';
 const SETTINGS_CACHE_KEY = 'salaryCalc Settings';
 const DATA_SCHEMA_VERSION_KEY = 'salaryCalc DataSchemaVersion';
-const DATA_SCHEMA_VERSION = '3';
+const DATA_SCHEMA_VERSION = '4';
 
 function getCacheKey(emp) {
   return `${emp.name}|${emp.employeeId}`;
