@@ -79,12 +79,12 @@ function extractCompHoursFromDaily(val) {
   return extractLeaveHoursFromDaily(val, '调休假');
 }
 
-function extractParentalLeaveHoursFromDaily(val, hoursPerDay = 8) {
+function extractPaidLeaveHoursFromDaily(val, leaveName, hoursPerDay = 8) {
   if (!val) return 0;
-  const match = String(val).match(/育儿假\(([^)]+)\)/);
+  const match = String(val).match(new RegExp(`${leaveName}\\(([^)]+)\\)`));
   if (!match) return 0;
   if (match[1].includes('全天')) return hoursPerDay;
-  return extractLeaveHoursFromDaily(val, '育儿假');
+  return extractLeaveHoursFromDaily(val, leaveName);
 }
 
 /** 计算某天可计餐补的加班时长，以已审批的 "加班(a-b)" 时段为准。 */
@@ -185,7 +185,7 @@ function parseExcel(data) {
     // Build daily attendance with dates
     const daily = [];
     let autoCompHours = 0;
-    let autoParentalLeaveHours = 0;
+    let autoPaidLeaveHours = 0;
     let autoPersonalHours = 0;
     let autoSickHours = 0;
     let hasMissingPunch = false;
@@ -214,22 +214,23 @@ function parseExcel(data) {
       }
       autoPersonalHours += extractLeaveHoursFromDaily(val, '事假');
       autoSickHours += extractLeaveHoursFromDaily(val, '病假');
-      autoParentalLeaveHours += extractParentalLeaveHoursFromDaily(val, hoursPerDay);
+      autoPaidLeaveHours += extractPaidLeaveHoursFromDaily(val, '育儿假', hoursPerDay);
+      autoPaidLeaveHours += extractPaidLeaveHoursFromDaily(val, '丧假', hoursPerDay);
     }
 
     // 调休按实际审批小时带薪，不按半天四舍五入。假别可在页面中修正，以处理
     // 源表假别录入错误；剩余未标明假别的缺勤默认计入事假。
-    const classifiedHours = autoCompHours + autoParentalLeaveHours + autoPersonalHours + autoSickHours;
+    const classifiedHours = autoCompHours + autoPaidLeaveHours + autoPersonalHours + autoSickHours;
     const unclassifiedHours = Math.max(0, absenceHours - classifiedHours);
     let personalHours = autoPersonalHours + unclassifiedHours;
-    if (hasMissingPunch) {
-      // 飞书源表会把单次缺卡记为缺勤 8h，但实际出勤只少 0.5 天。
-      // 用实际出勤缺口兜底，避免缺一次卡扣掉整日工资。
+    if (hasMissingPunch || autoCompHours > 0 || autoPaidLeaveHours > 0) {
+      // 飞书源表的缺勤时长可能含缺卡整日或小时舍入残差。
+      // 有缺卡/带薪假时用实际出勤缺口兜底，避免误扣工资。
       const shortfallHours = calcAttendanceShortfallHours({
         requiredDays: monthlyDays,
         requiredHours: monthlyHours,
         actualDays,
-        compHours: autoCompHours,
+        compHours: autoCompHours + autoPaidLeaveHours,
       });
       personalHours = Math.min(personalHours, Math.max(0, shortfallHours - autoSickHours));
     }
@@ -255,7 +256,7 @@ function parseExcel(data) {
       // editable
       sickHours: autoSickHours,
       compHours: autoCompHours,
-      parentalLeaveHours: autoParentalLeaveHours,
+      paidLeaveHours: autoPaidLeaveHours,
       personalHours: personalHours,
       daily: daily,
     };
@@ -265,7 +266,7 @@ function parseExcel(data) {
 function calcPaidAttendanceDays(emp) {
   const hoursPerDay = emp.requiredDays > 0 ? emp.requiredHours / emp.requiredDays : 8;
   if (hoursPerDay <= 0) return emp.actualDays;
-  const paidLeaveHours = emp.compHours + (emp.parentalLeaveHours || 0);
+  const paidLeaveHours = emp.compHours + (emp.paidLeaveHours || 0);
   return Math.min(emp.requiredDays, emp.actualDays + paidLeaveHours / hoursPerDay);
 }
 
@@ -825,7 +826,7 @@ const FILENAME_CACHE_KEY = 'salaryCalc FileName';
 const SALARY_PERIOD_CACHE_KEY = 'salaryCalc SalaryPeriod';
 const SETTINGS_CACHE_KEY = 'salaryCalc Settings';
 const DATA_SCHEMA_VERSION_KEY = 'salaryCalc DataSchemaVersion';
-const DATA_SCHEMA_VERSION = '4';
+const DATA_SCHEMA_VERSION = '5';
 
 function getCacheKey(emp) {
   return `${emp.name}|${emp.employeeId}`;

@@ -6,7 +6,7 @@ const source = fs.readFileSync(new URL('../js/script.js', import.meta.url), 'utf
 const calculationSource = source.split('// ======= Render =======')[0] + `
 globalThis.salaryRules = {
   extractLeaveHoursFromDaily,
-  extractParentalLeaveHoursFromDaily,
+  extractPaidLeaveHoursFromDaily,
   extractDailyColumns,
   countPayableDays,
   calcPaidAttendanceDays,
@@ -25,8 +25,10 @@ const juneDates = Array.from({ length: 30 }, (_, index) => ({
 
 assert.equal(rules.extractLeaveHoursFromDaily('调休假(13:30-18:00)', '调休假'), 4.5);
 assert.equal(rules.extractLeaveHoursFromDaily('调休假(08:30-12:00,13:30-18:00)', '调休假'), 8);
-assert.equal(rules.extractParentalLeaveHoursFromDaily('请假(-),请假(-);育儿假(全天)', 8), 8);
-assert.equal(rules.extractParentalLeaveHoursFromDaily('育儿假(08:30-12:00)', 8), 3.5);
+assert.equal(rules.extractPaidLeaveHoursFromDaily('请假(-),请假(-);育儿假(全天)', '育儿假', 8), 8);
+assert.equal(rules.extractPaidLeaveHoursFromDaily('育儿假(08:30-12:00)', '育儿假', 8), 3.5);
+assert.equal(rules.extractPaidLeaveHoursFromDaily('请假(-),请假(-);丧假(全天)', '丧假', 8), 8);
+assert.equal(rules.extractPaidLeaveHoursFromDaily('丧假(08:30-12:00)', '丧假', 8), 3.5);
 
 // 每日考勤日期列按表头 YYYY-MM-DD 动态检测，不再硬编码 46-75
 function headerRowWithDates(startCol, dayCount, month = '04') {
@@ -79,8 +81,14 @@ assert.equal(rules.calcPaidAttendanceDays({
   requiredHours: 176,
   actualDays: 19,
   compHours: 8,
-  parentalLeaveHours: 16,
+  paidLeaveHours: 16,
 }), 22);
+assert.equal(rules.calcAttendanceShortfallHours({
+  requiredDays: 18,
+  requiredHours: 144,
+  actualDays: 17.438,
+  compHours: 4.5,
+}), 0);
 
 assert.equal(rules.calcDeductibleAbsenceHours({ sickHours: 0, personalHours: 1 }), 1);
 
